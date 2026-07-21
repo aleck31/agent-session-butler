@@ -59,7 +59,7 @@ asbutler help
 
 ### Browser UI (`serve`)
 
-`asbutler serve` starts a local HTTP server and a self-contained browser UI — a file-inspector view of every session grouped by directory, a disk-usage bar showing how much is reclaimable, per-directory expand to see sessions (message count and title resolved on demand), path/agent search, an orphans-only filter, and per-session delete behind a confirmation dialog. The frontend (a small Alpine.js app) and its assets are embedded into the binary via `go:embed`, so it needs no network access and ships as a single file. Same core as the CLI — nothing new touches session parsing or deletion.
+`asbutler serve` starts a local HTTP server and a self-contained browser UI — a two-pane master-detail view: a sidebar lists every working directory (with agent chips, a rollup, orphan count, and directory search), and selecting one shows its sessions in a sortable table (Title / Agent / Messages / Size / Modified / Session ID). Message counts and titles resolve on demand when a directory is opened. Rows are multi-selectable (Select all) for batch delete, and single or batch deletes go behind a confirmation dialog; sessions held by a running agent are lock-protected. A day/night theme toggle is remembered across visits and defaults to the system preference. The frontend (a small Alpine.js app) and its assets are embedded into the binary via `go:embed`, so it needs no network access and ships as a single file. Same core as the CLI — nothing new touches session parsing or deletion.
 
 ## Project layout
 
