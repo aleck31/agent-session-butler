@@ -6,9 +6,9 @@
 <title>Agent Session Butler</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230F1319'/><circle cx='16' cy='16' r='6' fill='%234C9A8E'/></svg>">
 <style>
-  /* ── Two themes. night = the terminal/file-inspector default; day = a light,
+  /* ── Two themes. dark = the terminal/file-inspector default; bright = a light,
        macOS-adjacent surface. Toggled via [data-theme] on <html>. ────────── */
-  :root, [data-theme="night"] {
+  :root, [data-theme="dark"] {
     --bg:        #0F1319;
     --panel:     #1A2029;
     --panel-2:   #222A35;
@@ -23,7 +23,7 @@
     --sel:       #23405C;   /* selected row/dir wash */
     --sel-bord:  #3E7CB1;
   }
-  [data-theme="day"] {
+  [data-theme="bright"] {
     --bg:        #FBFAF7;
     --panel:     #FFFFFF;
     --panel-2:   #F1EFEA;
@@ -38,6 +38,9 @@
     --sel:       #DCE9F5;
     --sel-bord:  #2F6FB0;
   }
+  /* Shared height for the sidebar head and the summary strip so their bottom
+     dividers line up across the split. */
+  :root { --head-h: 96px; }
   * { box-sizing: border-box; }
   html { height: 100%; }
   body {
@@ -55,8 +58,9 @@
     display: flex; align-items: center; gap: 12px; padding: 14px 20px;
     border-bottom: 1px solid var(--line); background: var(--panel);
   }
-  .logo { font-family: system-ui, sans-serif; font-weight: 700; font-size: 17px; letter-spacing: -0.02em; }
+  .logo { font-family: system-ui, sans-serif; font-weight: 700; font-size: 21px; letter-spacing: -0.02em; }
   .logo .dot { color: var(--live); }
+  .ver { font-size: 9px; color: var(--faint); align-self: center; padding: 1px 7px; border: 1px solid var(--line); border-radius: 20px; }
   .spacer { flex: 1; }
   .btn {
     font: inherit; font-size: 12.5px; color: var(--muted); background: var(--panel);
@@ -70,14 +74,23 @@
   .body { flex: 1; display: flex; min-height: 0; }
 
   /* ── Sidebar (Discovered) ────────────────────────────────────────────── */
-  .side { width: 320px; flex: none; background: var(--sidebar); border-right: 1px solid var(--line); overflow-y: auto; }
-  .side-head { padding: 16px 16px 12px; position: sticky; top: 0; background: var(--sidebar); border-bottom: 1px solid var(--line); }
+  /* Sidebar is a fixed head + an independently-scrolling directory list, so the
+     head (agent filters + search) stays put while the list scrolls. */
+  .side { width: var(--side-w, 320px); flex: none; background: var(--sidebar); border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow: hidden; }
+  .side-list { flex: 1; overflow-y: auto; }
+
+  /* Drag handle to resize the sidebar. Sits on the sidebar's right edge. */
+  .resizer { flex: none; width: 6px; margin-left: -3px; cursor: col-resize; z-index: 5; background: transparent; }
+  .resizer:hover, .resizer.dragging { background: var(--sel-bord); opacity: .5; }
+  body.resizing { cursor: col-resize; user-select: none; }
+  .side-head { flex: none; height: var(--head-h); padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--line); display: flex; flex-direction: column; justify-content: center; gap: 11px; }
   .side-title { font-family: system-ui, sans-serif; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 7px; }
-  .agents { margin-top: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
-  .chip { font-size: 11px; color: var(--muted); background: var(--panel-2); border: 1px solid var(--line); border-radius: 20px; padding: 2px 10px; }
-  .rollup { margin-top: 11px; font-size: 12px; color: var(--muted); }
-  .rollup .orphan { color: var(--orphan); display: block; margin-top: 3px; }
-  .side-search { width: 100%; margin-top: 11px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; color: var(--ink); font: inherit; font-size: 12.5px; }
+  .agents { display: flex; gap: 6px; flex-wrap: wrap; }
+  /* Agent chips double as filter toggles: dimmed when off, teal-tinted when on. */
+  .chip { font: inherit; font-size: 11px; color: var(--faint); background: transparent; border: 1px solid var(--line); border-radius: 20px; padding: 3px 11px; cursor: pointer; transition: .12s; opacity: .55; }
+  .chip:hover { opacity: 1; border-color: var(--faint); }
+  .chip.on { color: var(--live); border-color: var(--live); background: color-mix(in srgb, var(--live) 12%, transparent); opacity: 1; }
+  .side-search { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; color: var(--ink); font: inherit; font-size: 12.5px; }
   .side-search:focus { outline: none; border-color: var(--live); }
 
   .dir { padding: 9px 16px; cursor: pointer; border-left: 3px solid transparent; display: flex; align-items: center; gap: 10px; }
@@ -100,6 +113,17 @@
   .dh-sub { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
   .dh-actions { margin-top: 12px; display: flex; align-items: center; gap: 10px; }
   .badge { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--orphan); border: 1px solid var(--orphan); border-radius: 4px; padding: 1px 6px; }
+
+  /* ── Persistent compact summary strip (top of detail pane) ───────────── */
+  .summary-strip { height: var(--head-h); padding: 0 22px; border-bottom: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; justify-content: center; gap: 8px; }
+  .summary-title { font-family: system-ui, sans-serif; font-size: 16px; font-weight: 600; color: var(--ink); }
+  .usagebar { height: 9px; border-radius: 4px; overflow: hidden; display: flex; background: var(--panel-2); border: 1px solid var(--line); }
+  .usagebar > span { height: 100%; transition: width .45s ease; min-width: 2px; }
+  .summary-nums { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .summary-nums .chunk { display: inline-flex; align-items: center; gap: 6px; }
+  .summary-nums i { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+  .summary-nums b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .summary-nums .total { margin-left: auto; color: var(--faint); }
 
   .tbl-wrap { flex: 1; overflow: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
@@ -142,13 +166,14 @@
 </style>
 </head>
 <body>
-<div class="app" x-data="butler()" x-init="load()" x-cloak>
+<div class="app" x-data="butler()" x-init="load()" x-cloak :style="`--side-w:${sideWidth}px`">
 
   <div class="mast">
     <span class="logo">Agent Session Butler<span class="dot">.</span></span>
+    <span class="ver" x-show="summary?.version" x-text="`v${summary?.version}`"></span>
     <span class="spacer"></span>
-    <button class="btn" @click="toggleTheme()" x-text="theme === 'night' ? '☾ night' : '☀ day'" title="Toggle theme"></button>
     <button class="btn" @click="load()" :disabled="loading" x-text="loading ? 'scanning…' : '↻ rescan'"></button>
+    <button class="btn" @click="toggleTheme()" x-text="theme === 'dark' ? '☀️' : '🌑'" title="Toggle theme"></button>
   </div>
 
   <div class="body">
@@ -156,37 +181,60 @@
     <!-- ── Sidebar ── -->
     <aside class="side">
       <div class="side-head">
-        <div class="side-title sans">🔍 Discovered</div>
         <div class="agents">
-          <template x-for="a in (summary?.agents || [])" :key="a"><span class="chip" x-text="a"></span></template>
-        </div>
-        <div class="rollup" x-show="summary">
-          <span x-text="`${summary?.totalCount ?? 0} sessions · ${human(summary?.totalSize)} · ${summary?.totalGroups ?? 0} dirs`"></span>
-          <span class="orphan" x-show="summary?.orphanCount > 0"
-                x-text="`🗂 ${summary?.orphanCount ?? 0} orphaned (${human(summary?.orphanSize)} reclaimable)`"></span>
+          <template x-for="a in (summary?.agents || [])" :key="a">
+            <button class="chip" :class="{ on: activeAgents.has(a) }" @click="toggleAgent(a)"
+                    :title="activeAgents.has(a) ? `Hide ${a} sessions` : `Show ${a} sessions`" x-text="a"></button>
+          </template>
         </div>
         <input class="side-search" type="search" placeholder="Filter directories…" x-model="dirQuery">
       </div>
 
-      <template x-for="g in filteredGroups()" :key="g.cwd">
-        <div class="dir" :class="{ sel: selectedCwd === g.cwd, orphan: g.orphan }" @click="selectDir(g)">
-          <span class="ic">📁</span>
-          <div class="dir-txt">
-            <div class="dir-name" x-text="g.displayName || g.cwd"></div>
-            <div class="dir-path" x-text="g.cwd"></div>
-            <span class="mini-missing" x-show="g.orphan">missing</span>
+      <div class="side-list">
+        <template x-for="g in filteredGroups()" :key="g.cwd">
+          <div class="dir" :class="{ sel: selectedCwd === g.cwd, orphan: g.orphan }" @click="selectDir(g)">
+            <span class="ic">📁</span>
+            <div class="dir-txt">
+              <div class="dir-name" x-text="g.displayName || g.cwd"></div>
+              <div class="dir-path" x-text="g.cwd"></div>
+              <span class="mini-missing" x-show="g.orphan">missing</span>
+            </div>
+            <span class="dir-badge" x-text="activeInGroup(g)"></span>
           </div>
-          <span class="dir-badge" x-text="g.sessionCount"></span>
-        </div>
-      </template>
+        </template>
+      </div>
     </aside>
+
+    <!-- Drag to resize the sidebar -->
+    <div class="resizer" :class="{ dragging: resizing }" @pointerdown="startResize($event)"
+         role="separator" aria-orientation="vertical" title="Drag to resize"></div>
 
     <!-- ── Detail ── -->
     <main class="detail">
+
+      <!-- Persistent compact summary strip: title + bar + legend with percentages -->
+      <div class="summary-strip" x-show="summary && summary.totalGroups">
+        <div class="summary-title sans">Session storage</div>
+        <div class="usagebar" title="Live storage by agent, plus orphaned (reclaimable)">
+          <template x-for="(seg, i) in usageSegments()" :key="seg.label">
+            <span :style="`width:${seg.pct}%;background:${seg.color}`" :title="`${seg.label}: ${seg.human} · ${seg.pct.toFixed(1)}%`"></span>
+          </template>
+        </div>
+        <div class="summary-nums">
+          <template x-for="seg in usageSegments()" :key="seg.label">
+            <span class="chunk"><i :style="`background:${seg.color}`"></i><span x-text="seg.label"></span> <b x-text="`${seg.human} (${seg.pct.toFixed(1)}%)`"></b></span>
+          </template>
+          <span class="chunk total" x-text="`${activeCount()} sessions · ${filteredGroups().length} dirs`"></span>
+        </div>
+      </div>
+
+      <!-- No directory selected → gentle prompt below the strip -->
       <template x-if="!selected">
-        <div class="placeholder" x-show="summary" x-text="summary?.totalGroups ? 'Select a directory to view its sessions.' : 'No sessions found.'"></div>
+        <div class="placeholder" x-show="summary"
+             x-text="summary?.totalGroups ? 'Select a directory to review its sessions.' : 'No sessions found.'"></div>
       </template>
 
+      <!-- Directory selected → its session table -->
       <template x-if="selected">
         <div style="display:flex;flex-direction:column;min-height:0;flex:1">
           <div class="detail-head">
@@ -268,17 +316,45 @@ function butler() {
     selectedIds: new Set(),
     sort: { key: 'modifiedAt', dir: 'desc' },
     pending: null, deleting: false, delError: '',
-    theme: 'night',
+    theme: 'dark',
+    activeAgents: new Set(),   // agents currently shown; all discovered agents by default
+    sideWidth: 320, resizing: false,
+
+    // Sidebar width bounds (px).
+    SIDE_MIN: 220, SIDE_MAX: 560,
 
     init() {
       const saved = localStorage.getItem('asb-theme');
-      this.theme = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'day' : 'night');
+      this.theme = saved || (matchMedia('(prefers-color-scheme: light)').matches ? 'bright' : 'dark');
       document.documentElement.setAttribute('data-theme', this.theme);
+      const w = parseInt(localStorage.getItem('asb-side-w'), 10);
+      if (w) this.sideWidth = Math.min(this.SIDE_MAX, Math.max(this.SIDE_MIN, w));
     },
     toggleTheme() {
-      this.theme = this.theme === 'night' ? 'day' : 'night';
+      this.theme = this.theme === 'dark' ? 'bright' : 'dark';
       document.documentElement.setAttribute('data-theme', this.theme);
       localStorage.setItem('asb-theme', this.theme);
+    },
+
+    // Drag the divider to resize the sidebar. Pointer capture keeps tracking
+    // even if the cursor outruns the 6px handle.
+    startResize(e) {
+      e.preventDefault();
+      this.resizing = true;
+      document.body.classList.add('resizing');
+      const move = (ev) => {
+        const w = Math.min(this.SIDE_MAX, Math.max(this.SIDE_MIN, ev.clientX));
+        this.sideWidth = w;
+      };
+      const up = () => {
+        this.resizing = false;
+        document.body.classList.remove('resizing');
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', up);
+        localStorage.setItem('asb-side-w', String(this.sideWidth));
+      };
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up);
     },
 
     async load() {
@@ -287,6 +363,11 @@ function butler() {
         const r = await fetch('/api/groups');
         this.summary = await r.json();
         this.enriched = {};
+        // Default: every discovered agent is active. Keep prior choices on rescan
+        // for agents that still exist.
+        const discovered = this.summary.agents || [];
+        if (this.activeAgents.size === 0) this.activeAgents = new Set(discovered);
+        else this.activeAgents = new Set([...this.activeAgents].filter(a => discovered.includes(a)));
         // Keep the current selection if that cwd still exists.
         if (this.selectedCwd && !this.summary.groups.some(g => g.cwd === this.selectedCwd)) {
           this.selectedCwd = null;
@@ -309,8 +390,53 @@ function butler() {
     },
     shortId(id) { return id.length > 8 ? id.slice(0, 8) : id; },
 
+    toggleAgent(a) {
+      const next = new Set(this.activeAgents);
+      next.has(a) ? next.delete(a) : next.add(a);
+      // Never leave zero agents active — re-selecting the last one would strand
+      // the UI empty; keep at least the one just clicked.
+      if (next.size === 0) next.add(a);
+      this.activeAgents = next;
+      // If the selected directory no longer has any visible session, clear it.
+      if (this.selected && !this.groupHasActive(this.selected)) this.selectedCwd = null;
+    },
+    groupHasActive(g) { return (g.sessions || []).some(s => this.activeAgents.has(s.agent)); },
+    activeInGroup(g) { return (g.sessions || []).filter(s => this.activeAgents.has(s.agent)).length; },
+
+    // Disk-usage bar: one segment per *active* agent's live bytes, plus orphaned.
+    // Percentages are of the active total, so widths always sum to 100%.
+    usageSegments() {
+      const s = this.summary;
+      if (!s) return [];
+      const palette = ['#4C9A8E', '#6FB3C4', '#8A7FB5', '#B5A15E']; // teal → cool → warm, stable by agent order
+      const usage = (s.agentUsage || []).filter(a => this.activeAgents.has(a.agent));
+      const orphan = s.orphanSize > 0 ? s.orphanSize : 0;
+      const total = usage.reduce((t, a) => t + a.liveSize, 0) + orphan;
+      if (!total) return [];
+      // Colour by the agent's index in the full list so a hidden agent doesn't
+      // shift the remaining colours.
+      const order = s.agentUsage || [];
+      const segs = usage.map(a => ({
+        label: a.agent, human: a.sizeHuman, bytes: a.liveSize,
+        pct: (a.liveSize / total) * 100,
+        color: palette[order.findIndex(x => x.agent === a.agent) % palette.length],
+      }));
+      if (orphan) {
+        segs.push({ label: 'Orphaned', human: this.human(orphan), bytes: orphan,
+                    pct: (orphan / total) * 100, color: 'var(--orphan)' });
+      }
+      return segs;
+    },
+
+    // Total session count across the active agents (for the strip's tally).
+    activeCount() {
+      return (this.summary?.groups || []).reduce((n, g) =>
+        n + (g.sessions || []).filter(s => this.activeAgents.has(s.agent)).length, 0);
+    },
+
     filteredGroups() {
       let gs = this.summary?.groups || [];
+      gs = gs.filter(g => this.groupHasActive(g)); // hide dirs with no visible sessions
       const q = this.dirQuery.trim().toLowerCase();
       if (q) gs = gs.filter(g => g.cwd.toLowerCase().includes(q));
       return gs;
@@ -338,7 +464,7 @@ function butler() {
     },
     arrow() { return this.sort.dir === 'asc' ? '▲' : '▼'; },
     sortedSessions() {
-      const list = [...(this.selected?.sessions || [])];
+      const list = (this.selected?.sessions || []).filter(s => this.activeAgents.has(s.agent));
       const { key, dir } = this.sort;
       list.sort((a, b) => {
         let av = a[key], bv = b[key];
@@ -352,7 +478,7 @@ function butler() {
       return list;
     },
 
-    deletableSessions() { return (this.selected?.sessions || []).filter(s => !s.locked); },
+    deletableSessions() { return (this.selected?.sessions || []).filter(s => !s.locked && this.activeAgents.has(s.agent)); },
     allSelected() { const d = this.deletableSessions(); return d.length > 0 && d.every(s => this.selectedIds.has(s.id)); },
     toggleSelectAll() {
       if (this.allSelected()) this.selectedIds = new Set();

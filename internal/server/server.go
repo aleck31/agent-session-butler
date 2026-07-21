@@ -18,13 +18,15 @@ var webFS embed.FS
 
 // Server holds the store and routing.
 type Server struct {
-	store *store.Store
-	mux   *http.ServeMux
+	store   *store.Store
+	mux     *http.ServeMux
+	version string
 }
 
-// New builds a server backed by the default store.
-func New() *Server {
-	s := &Server{store: store.New(), mux: http.NewServeMux()}
+// New builds a server backed by the default store. version is surfaced to the
+// UI (in the /api/groups summary) and is otherwise cosmetic.
+func New(version string) *Server {
+	s := &Server{store: store.New(), mux: http.NewServeMux(), version: version}
 	s.routes()
 	return s
 }
@@ -42,7 +44,7 @@ func (s *Server) routes() {
 // Handler exposes the router (useful for tests and for wrapping with middleware).
 func (s *Server) Handler() http.Handler { return s.mux }
 
-// ListenAndServe starts the HTTP server on addr (e.g. "127.0.0.1:7777").
+// ListenAndServe starts the HTTP server on addr (e.g. "127.0.0.1:7788").
 func (s *Server) ListenAndServe(addr string) error {
 	srv := &http.Server{
 		Addr:              addr,
@@ -79,15 +81,25 @@ type groupView struct {
 	Sessions       []sessionView `json:"sessions"`
 }
 
+// agentUsage is one segment of the disk-usage bar: an agent's live (non-orphan)
+// bytes. Orphaned bytes are reported separately in summaryView.OrphanSize.
+type agentUsage struct {
+	Agent     string `json:"agent"`
+	LiveSize  int64  `json:"liveSize"`
+	SizeHuman string `json:"sizeHuman"`
+}
+
 // summaryView is the top-of-page rollup.
 type summaryView struct {
-	Agents      []string    `json:"agents"`
-	TotalGroups int         `json:"totalGroups"`
-	TotalCount  int         `json:"totalCount"`
-	TotalSize   int64       `json:"totalSize"`
-	OrphanCount int         `json:"orphanCount"`
-	OrphanSize  int64       `json:"orphanSize"`
-	Groups      []groupView `json:"groups"`
+	Version     string       `json:"version"`
+	Agents      []string     `json:"agents"`
+	AgentUsage  []agentUsage `json:"agentUsage"` // per-agent live bytes, for the usage bar
+	TotalGroups int          `json:"totalGroups"`
+	TotalCount  int          `json:"totalCount"`
+	TotalSize   int64        `json:"totalSize"`
+	OrphanCount int          `json:"orphanCount"`
+	OrphanSize  int64        `json:"orphanSize"`
+	Groups      []groupView  `json:"groups"`
 }
 
 func toSessionView(s store.Group) []sessionView {
@@ -125,8 +137,9 @@ func toGroupView(g store.Group) groupView {
 func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 	groups := s.store.Scan()
 
-	sum := summaryView{Agents: s.store.InstalledAgents()}
+	sum := summaryView{Version: s.version, Agents: s.store.InstalledAgents()}
 	sum.Groups = make([]groupView, 0, len(groups))
+	liveByAgent := map[string]int64{} // agent → live (non-orphan) bytes
 	for _, g := range groups {
 		gv := toGroupView(g)
 		sum.Groups = append(sum.Groups, gv)
@@ -136,6 +149,16 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 		if gv.Orphan {
 			sum.OrphanCount++
 			sum.OrphanSize += gv.TotalSize
+		} else {
+			for _, sess := range g.Sessions {
+				liveByAgent[sess.Agent] += sess.FileSize
+			}
+		}
+	}
+	// Emit the usage bar's live segments in installed-agent order (stable colours).
+	for _, name := range sum.Agents {
+		if sz := liveByAgent[name]; sz > 0 {
+			sum.AgentUsage = append(sum.AgentUsage, agentUsage{Agent: name, LiveSize: sz, SizeHuman: store.HumanSize(sz)})
 		}
 	}
 	writeJSON(w, http.StatusOK, sum)

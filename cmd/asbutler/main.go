@@ -14,6 +14,9 @@ import (
 	"github.com/aleck/agent-session-butler/internal/store"
 )
 
+// version is the release version, printed by `asbutler version`.
+const version = "0.4.0"
+
 func main() {
 	args := os.Args[1:]
 	cmd := "list"
@@ -29,6 +32,8 @@ func main() {
 		cmdRm(args)
 	case "serve":
 		cmdServe(args)
+	case "version", "--version":
+		fmt.Printf("asbutler v%s\n", version)
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 	default:
@@ -47,7 +52,8 @@ Usage:
   asbutler list -o              Only orphaned directories (working dir is gone)
   asbutler list -v              Also show per-session details (message count, title)
   asbutler rm <id>...           Permanently delete sessions by id
-  asbutler serve [--addr host:port]  Start the local browser UI (default 127.0.0.1:7777)
+  asbutler serve [--addr host:port]  Start the local browser UI (default 127.0.0.1:7788)
+  asbutler version              Print the version
   asbutler help                 Show this help
 
 `)
@@ -212,7 +218,7 @@ func cmdRm(args []string) {
 }
 
 func cmdServe(args []string) {
-	addr := "127.0.0.1:7777"
+	addr := "127.0.0.1:7788"
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -221,7 +227,7 @@ func cmdServe(args []string) {
 				addr = args[i+1]
 				i++
 			} else {
-				fmt.Fprintln(os.Stderr, "serve: --addr needs a value (e.g. --addr 127.0.0.1:7777)")
+				fmt.Fprintln(os.Stderr, "serve: --addr needs a value (e.g. --addr 127.0.0.1:7788)")
 				os.Exit(2)
 			}
 		case strings.HasPrefix(a, "--addr="):
@@ -229,7 +235,7 @@ func cmdServe(args []string) {
 		}
 	}
 
-	srv := server.New()
+	srv := server.New(version)
 	fmt.Printf("Agent Session Butler — serving at http://%s  (Ctrl-C to stop)\n", addr)
 	if err := srv.ListenAndServe(addr); err != nil {
 		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
