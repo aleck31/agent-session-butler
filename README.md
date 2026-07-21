@@ -44,11 +44,16 @@ GOOS=windows GOARCH=amd64 go build -o dist/asbutler.exe       ./cmd/asbutler
 ## Usage
 
 ```bash
-asbutler list        # every session, grouped by working directory
-asbutler list -v     # also enrich: message count + resolved title per session
-asbutler rm <id>...  # permanently delete sessions by id (locked ones are refused)
+asbutler list                 # every session, grouped by working directory
+asbutler list -a claude       # only a matching agent (case-insensitive substring)
+asbutler list -o              # only orphaned directories (working dir is gone)
+asbutler list -v              # also enrich: message count + resolved title per session
+asbutler list -a kiro -o -v   # filters and detail all combine
+asbutler rm <id>...           # permanently delete sessions by id (locked ones are refused)
 asbutler help
 ```
+
+`-a` / `--agent` matches the agent name by case-insensitive substring, so `-a claude` selects "Claude Code" — no need to type the full name. `-o` / `--orphans` keeps only groups whose working directory no longer exists — the prime cleanup candidates. Flags compose, and the summary line reflects the filtered set.
 
 ## Project layout
 
