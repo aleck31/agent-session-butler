@@ -50,15 +50,21 @@ asbutler list -o              # only orphaned directories (working dir is gone)
 asbutler list -v              # also enrich: message count + resolved title per session
 asbutler list -a kiro -o -v   # filters and detail all combine
 asbutler rm <id>...           # permanently delete sessions by id (locked ones are refused)
+asbutler serve                # local browser UI at http://127.0.0.1:7777
+asbutler serve --addr :8080   # bind a different host:port
 asbutler help
 ```
 
 `-a` / `--agent` matches the agent name by case-insensitive substring, so `-a claude` selects "Claude Code" — no need to type the full name. `-o` / `--orphans` keeps only groups whose working directory no longer exists — the prime cleanup candidates. Flags compose, and the summary line reflects the filtered set.
 
+### Browser UI (`serve`)
+
+`asbutler serve` starts a local HTTP server and a self-contained browser UI — a file-inspector view of every session grouped by directory, a disk-usage bar showing how much is reclaimable, per-directory expand to see sessions (message count and title resolved on demand), path/agent search, an orphans-only filter, and per-session delete behind a confirmation dialog. The frontend (a small Alpine.js app) and its assets are embedded into the binary via `go:embed`, so it needs no network access and ships as a single file. Same core as the CLI — nothing new touches session parsing or deletion.
+
 ## Project layout
 
 ```
-cmd/asbutler/main.go          CLI entry point (list / rm)
+cmd/asbutler/main.go          CLI entry point (list / rm / serve)
 internal/agent/
   agent.go                    Agent interface, Session, streaming jsonl reader
   kiro.go                     KiroAgent (.json + .jsonl bundle)
@@ -68,13 +74,12 @@ internal/agent/
 internal/store/
   store.go                    concurrent scan, mtime cache, grouping, orphan, delete
   util.go                     path + human-size helpers
+internal/server/
+  server.go                   HTTP routes + JSON view models over the store
+  web/                         embedded UI (index.html + vendored alpine.min.js)
 ```
 
 Only the process-lock check is platform-specific (build-tag split); everything else is shared.
-
-## Roadmap
-
-- `serve` — local HTTP server with a browser UI (rich table, sort, search, delete confirmation, orphan badges), frontend embedded via `go:embed` into the single binary.
 
 ## License
 

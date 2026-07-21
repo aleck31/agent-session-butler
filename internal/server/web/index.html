@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Session Butler</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230F1319'/><circle cx='16' cy='16' r='6' fill='%234C9A8E'/></svg>">
+<style>
+  /* ── Palette: a terminal / file-inspector, not a landing page ────────── */
+  :root {
+    --bg:        #0F1319;  /* deep ink ground */
+    --panel:     #1A2029;  /* raised surface */
+    --panel-2:   #222A35;  /* hover / nested */
+    --line:      #2C3543;  /* hairline rules */
+    --ink:       #E6E1D6;  /* warm white, primary text */
+    --muted:     #8A94A6;  /* secondary / metadata */
+    --faint:     #5A6473;  /* tertiary / disabled */
+    --live:      #4C9A8E;  /* teal: healthy / in-use directory */
+    --orphan:    #C7794E;  /* terracotta: missing dir — cleanup candidate */
+    --danger:    #D45B5B;  /* delete / destructive */
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Code", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { color-scheme: dark; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--mono); font-size: 14px; line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; }
+  [x-cloak] { display: none !important; }
+
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 32px 24px 80px; }
+
+  /* ── Masthead ────────────────────────────────────────────────────────── */
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  .logo {
+    font-family: var(--sans); font-weight: 700; font-size: 20px;
+    letter-spacing: -0.02em;
+  }
+  .logo .dot { color: var(--live); }
+  .tagline { color: var(--muted); font-size: 12.5px; }
+  .spacer { flex: 1; }
+  .btn {
+    font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 11px; cursor: pointer; transition: .12s;
+  }
+  .btn:hover { color: var(--ink); border-color: var(--faint); background: var(--panel-2); }
+  .btn:disabled { opacity: .5; cursor: default; }
+
+  /* ── Signature: disk-usage bar ───────────────────────────────────────── */
+  .rollup { margin-top: 26px; }
+  .rollup-nums { display: flex; gap: 28px; flex-wrap: wrap; align-items: flex-end; }
+  .stat .n { font-size: 26px; font-weight: 600; letter-spacing: -0.01em; }
+  .stat .n.orphan { color: var(--orphan); }
+  .stat .l { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); }
+  .usagebar {
+    margin-top: 18px; height: 12px; border-radius: 4px; overflow: hidden;
+    display: flex; background: var(--panel); border: 1px solid var(--line);
+  }
+  .usagebar > span { height: 100%; transition: width .4s ease; }
+  .usagebar .seg-live   { background: var(--live); }
+  .usagebar .seg-orphan { background: var(--orphan); }
+  .legend { margin-top: 8px; display: flex; gap: 18px; font-size: 11.5px; color: var(--muted); }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: baseline; }
+
+  /* ── Controls ────────────────────────────────────────────────────────── */
+  .controls { margin-top: 30px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .search {
+    flex: 1; min-width: 220px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 7px; padding: 9px 12px; color: var(--ink); font-family: var(--mono); font-size: 13px;
+  }
+  .search::placeholder { color: var(--faint); }
+  .search:focus { outline: none; border-color: var(--live); }
+  .toggle {
+    display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted);
+    cursor: pointer; user-select: none; padding: 8px 11px; border: 1px solid var(--line);
+    border-radius: 7px; background: var(--panel);
+  }
+  .toggle input { accent-color: var(--orphan); }
+
+  /* ── Group rows ──────────────────────────────────────────────────────── */
+  .groups { margin-top: 22px; display: flex; flex-direction: column; gap: 10px; }
+  .group {
+    background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--live);
+    border-radius: 8px; overflow: hidden;
+  }
+  .group.is-orphan { border-left-color: var(--orphan); }
+  .group-head {
+    display: flex; align-items: center; gap: 12px; padding: 13px 16px; cursor: pointer;
+  }
+  .group-head:hover { background: var(--panel-2); }
+  .caret { color: var(--faint); font-size: 11px; width: 12px; transition: transform .15s; }
+  .group.open .caret { transform: rotate(90deg); }
+  .path { font-size: 13.5px; word-break: break-all; }
+  .path .base { color: var(--ink); }
+  .path .dir { color: var(--faint); }
+  .badge {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+    color: var(--orphan); border: 1px solid var(--orphan); border-radius: 4px;
+    padding: 1px 6px; white-space: nowrap;
+  }
+  .g-meta { margin-left: auto; display: flex; gap: 16px; color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+  .g-meta .size { color: var(--ink); }
+
+  /* ── Session table ───────────────────────────────────────────────────── */
+  .sessions { border-top: 1px solid var(--line); }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 9px 16px; border-top: 1px solid var(--line); }
+  th:first-child, td:first-child { border-top: none; }
+  thead th {
+    color: var(--faint); font-weight: 500; text-transform: uppercase;
+    letter-spacing: .07em; font-size: 10.5px; border-top: none;
+  }
+  tbody tr:hover { background: var(--panel-2); }
+  .s-title { color: var(--ink); max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .s-agent { color: var(--muted); }
+  .s-num { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+  .lock { color: var(--live); font-size: 11px; }
+  .del {
+    color: var(--faint); background: none; border: 1px solid transparent; border-radius: 5px;
+    padding: 3px 8px; cursor: pointer; font-family: var(--mono); font-size: 11.5px;
+  }
+  .del:hover { color: var(--danger); border-color: var(--danger); }
+  .del:disabled { opacity: .4; cursor: not-allowed; }
+  .del:disabled:hover { color: var(--faint); border-color: transparent; }
+
+  .empty, .loading { color: var(--muted); text-align: center; padding: 48px 0; }
+
+  /* ── Confirm dialog ──────────────────────────────────────────────────── */
+  .scrim { position: fixed; inset: 0; background: rgba(6,9,13,.72); display: grid; place-items: center; padding: 20px; }
+  .dialog {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 24px; max-width: 440px; width: 100%;
+  }
+  .dialog h2 { margin: 0 0 8px; font-family: var(--sans); font-size: 17px; }
+  .dialog p { color: var(--muted); font-size: 13px; margin: 0 0 6px; }
+  .dialog .target { color: var(--ink); word-break: break-all; }
+  .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+  .btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .btn-danger:hover { background: #c14a4a; border-color: #c14a4a; color: #fff; }
+  .err { color: var(--danger); font-size: 12.5px; margin-top: 10px; }
+
+  @media (max-width: 640px) {
+    .g-meta { display: none; }
+    .s-agent, thead th.c-agent, td.c-agent { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap" x-data="butler()" x-init="load()" x-cloak>
+
+  <header>
+    <div class="logo">Agent Session Butler<span class="dot">.</span></div>
+    <div class="tagline" x-show="summary" x-text="agentLine()"></div>
+    <div class="spacer"></div>
+    <button class="btn" @click="load()" :disabled="loading" x-text="loading ? 'scanning…' : '↻ rescan'"></button>
+  </header>
+
+  <!-- Signature: the disk-usage rollup -->
+  <section class="rollup" x-show="summary">
+    <div class="rollup-nums">
+      <div class="stat"><div class="n" x-text="summary?.totalCount ?? 0"></div><div class="l">sessions</div></div>
+      <div class="stat"><div class="n" x-text="summary?.totalGroups ?? 0"></div><div class="l">directories</div></div>
+      <div class="stat"><div class="n" x-text="human(summary?.totalSize)"></div><div class="l">on disk</div></div>
+      <div class="stat"><div class="n orphan" x-text="summary?.orphanCount ?? 0"></div><div class="l">orphaned</div></div>
+    </div>
+    <div class="usagebar" :title="human(summary?.orphanSize)+' of '+human(summary?.totalSize)+' is orphaned'">
+      <span class="seg-orphan" :style="`width:${orphanPct()}%`"></span>
+      <span class="seg-live"   :style="`width:${100-orphanPct()}%`"></span>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--live)"></i>Live directories</span>
+      <span><i style="background:var(--orphan)"></i>Orphaned <span x-text="'('+human(summary?.orphanSize)+' reclaimable)'"></span></span>
+    </div>
+  </section>
+
+  <div class="controls" x-show="summary">
+    <input class="search" type="search" placeholder="Filter by path or agent…" x-model="q">
+    <label class="toggle"><input type="checkbox" x-model="orphansOnly"> Orphans only</label>
+  </div>
+
+  <div class="loading" x-show="loading && !summary">Scanning agents…</div>
+
+  <div class="groups" x-show="summary">
+    <template x-for="g in visibleGroups()" :key="g.cwd">
+      <div class="group" :class="{ 'is-orphan': g.orphan, open: isOpen(g.cwd) }">
+        <div class="group-head" @click="toggle(g)">
+          <span class="caret">▶</span>
+          <span class="path">
+            <span class="dir" x-text="dirOf(g.cwd)"></span><span class="base" x-text="baseOf(g.cwd)"></span>
+          </span>
+          <span class="badge" x-show="g.orphan">missing</span>
+          <span class="g-meta">
+            <span x-text="g.sessionCount + (g.sessionCount===1?' session':' sessions')"></span>
+            <span class="size" x-text="g.totalSizeHuman"></span>
+          </span>
+        </div>
+
+        <div class="sessions" x-show="isOpen(g.cwd)">
+          <table>
+            <thead><tr>
+              <th>Title</th><th class="c-agent">Agent</th><th class="s-num">Msgs</th>
+              <th class="s-num">Size</th><th>Modified</th><th></th>
+            </tr></thead>
+            <tbody>
+              <template x-for="s in (g.sessions||[])" :key="s.id">
+                <tr>
+                  <td class="s-title" :title="s.title" x-text="s.title"></td>
+                  <td class="c-agent s-agent" x-text="s.agent"></td>
+                  <td class="s-num" x-text="s.messageCount ?? '·'"></td>
+                  <td class="s-num" x-text="s.sizeHuman"></td>
+                  <td x-text="fmtDate(s.modifiedAt)"></td>
+                  <td style="text-align:right">
+                    <span class="lock" x-show="s.locked" title="Held by a running agent">● in use</span>
+                    <button class="del" x-show="!s.locked" @click="askDelete(g, s)">delete</button>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </template>
+
+    <div class="empty" x-show="summary && visibleGroups().length === 0" x-text="emptyMsg()"></div>
+  </div>
+
+  <!-- Delete confirmation -->
+  <template x-if="pending">
+    <div class="scrim" @click.self="pending=null">
+      <div class="dialog">
+        <h2>Delete this session?</h2>
+        <p>This permanently removes the files on disk. It can't be undone.</p>
+        <p class="target" x-text="pending.s.title"></p>
+        <p style="margin-top:6px" x-text="pending.s.agent + ' · ' + pending.s.sizeHuman"></p>
+        <div class="err" x-show="delError" x-text="delError"></div>
+        <div class="dialog-actions">
+          <button class="btn" @click="pending=null" :disabled="deleting">Cancel</button>
+          <button class="btn btn-danger" @click="confirmDelete()" :disabled="deleting"
+                  x-text="deleting ? 'deleting…' : 'Delete permanently'"></button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+</div>
+
+<script src="alpine.min.js" defer></script>
+<script>
+function butler() {
+  return {
+    summary: null, loading: false, q: '', orphansOnly: false,
+    open: {}, enriched: {}, pending: null, deleting: false, delError: '',
+
+    async load() {
+      this.loading = true;
+      try {
+        const r = await fetch('/api/groups');
+        this.summary = await r.json();
+        this.open = {}; this.enriched = {};
+      } finally { this.loading = false; }
+    },
+
+    agentLine() {
+      const a = this.summary?.agents || [];
+      return a.length ? a.join(' · ') : 'no supported agents found';
+    },
+    human(n) {
+      if (n == null) return '—';
+      const u = ['B','KiB','MiB','GiB','TiB']; let i = 0, x = n;
+      while (x >= 1024 && i < u.length-1) { x /= 1024; i++; }
+      return (i === 0 ? x : x.toFixed(1)) + ' ' + u[i];
+    },
+    orphanPct() {
+      const t = this.summary?.totalSize || 0, o = this.summary?.orphanSize || 0;
+      return t ? Math.min(100, (o / t) * 100) : 0;
+    },
+    fmtDate(iso) {
+      const d = new Date(iso);
+      return d.toLocaleString(undefined, { year:'2-digit', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+    },
+    dirOf(p) { const i = p.replace(/\/+$/,'').lastIndexOf('/'); return i > 0 ? p.slice(0, i+1) : (i === 0 ? '/' : ''); },
+    baseOf(p) { const t = p.replace(/\/+$/,''); const i = t.lastIndexOf('/'); return i >= 0 ? t.slice(i+1) : t; },
+
+    visibleGroups() {
+      let gs = this.summary?.groups || [];
+      if (this.orphansOnly) gs = gs.filter(g => g.orphan);
+      const q = this.q.trim().toLowerCase();
+      if (q) gs = gs.filter(g =>
+        g.cwd.toLowerCase().includes(q) ||
+        (g.sessions||[]).some(s => (s.agent+' '+s.title).toLowerCase().includes(q))
+      );
+      return gs;
+    },
+    emptyMsg() {
+      if (this.orphansOnly) return 'No orphaned directories — every working directory still exists.';
+      if (this.q) return 'Nothing matches “' + this.q + '”.';
+      return 'No sessions found.';
+    },
+
+    isOpen(cwd) { return !!this.open[cwd]; },
+    async toggle(g) {
+      const cwd = g.cwd;
+      this.open[cwd] = !this.open[cwd];
+      if (this.open[cwd] && !this.enriched[cwd]) {
+        this.enriched[cwd] = true;
+        try {
+          const r = await fetch('/api/enrich', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ cwd }) });
+          if (r.ok) {
+            const fresh = await r.json();
+            const idx = this.summary.groups.findIndex(x => x.cwd === cwd);
+            if (idx >= 0) this.summary.groups[idx] = { ...this.summary.groups[idx], sessions: fresh.sessions };
+          }
+        } catch (_) { this.enriched[cwd] = false; }
+      }
+    },
+
+    askDelete(g, s) { this.delError = ''; this.pending = { g, s }; },
+    async confirmDelete() {
+      if (!this.pending) return;
+      this.deleting = true; this.delError = '';
+      const { g, s } = this.pending;
+      try {
+        const r = await fetch('/api/session/' + encodeURIComponent(s.id), { method: 'DELETE' });
+        if (r.status === 204) {
+          // Drop the row locally, adjust the group & rollup so the UI stays truthful without a full rescan.
+          g.sessions = (g.sessions || []).filter(x => x.id !== s.id);
+          g.sessionCount = Math.max(0, g.sessionCount - 1);
+          g.totalSize -= s.fileSize; g.totalSizeHuman = this.human(g.totalSize);
+          this.summary.totalCount--; this.summary.totalSize -= s.fileSize;
+          if (g.orphan) this.summary.orphanSize -= s.fileSize;
+          if (g.sessionCount === 0) {
+            this.summary.groups = this.summary.groups.filter(x => x.cwd !== g.cwd);
+            this.summary.totalGroups--;
+            if (g.orphan) this.summary.orphanCount--;
+          }
+          this.pending = null;
+        } else {
+          const body = await r.json().catch(() => ({}));
+          this.delError = body.error || ('Delete failed (' + r.status + ').');
+        }
+      } catch (e) {
+        this.delError = 'Network error — is the server still running?';
+      } finally { this.deleting = false; }
+    },
+  };
+}
+</script>
+</body>
+</html>

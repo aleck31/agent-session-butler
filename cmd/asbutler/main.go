@@ -1,6 +1,6 @@
 // Command asbutler (Agent Session Butler) manages the on-disk chat sessions of
-// your AI coding agents. Phase 1 ships the `list` and `rm` subcommands over a
-// cross-platform core; `serve` (browser UI) comes later.
+// your AI coding agents, over a cross-platform core shared by the CLI (list/rm)
+// and the browser UI (serve).
 package main
 
 import (
@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/aleck/agent-session-butler/internal/agent"
+	"github.com/aleck/agent-session-butler/internal/server"
 	"github.com/aleck/agent-session-butler/internal/store"
 )
 
@@ -26,6 +27,8 @@ func main() {
 		cmdList(args)
 	case "rm", "delete":
 		cmdRm(args)
+	case "serve":
+		cmdServe(args)
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 	default:
@@ -44,6 +47,7 @@ Usage:
   asbutler list -o              Only orphaned directories (working dir is gone)
   asbutler list -v              Also show per-session details (message count, title)
   asbutler rm <id>...           Permanently delete sessions by id
+  asbutler serve [--addr host:port]  Start the local browser UI (default 127.0.0.1:7777)
   asbutler help                 Show this help
 
 `)
@@ -203,6 +207,32 @@ func cmdRm(args []string) {
 	}
 	if found == 0 {
 		fmt.Fprintln(os.Stderr, "rm: no matching sessions found")
+		os.Exit(1)
+	}
+}
+
+func cmdServe(args []string) {
+	addr := "127.0.0.1:7777"
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--addr":
+			if i+1 < len(args) {
+				addr = args[i+1]
+				i++
+			} else {
+				fmt.Fprintln(os.Stderr, "serve: --addr needs a value (e.g. --addr 127.0.0.1:7777)")
+				os.Exit(2)
+			}
+		case strings.HasPrefix(a, "--addr="):
+			addr = strings.TrimPrefix(a, "--addr=")
+		}
+	}
+
+	srv := server.New()
+	fmt.Printf("Agent Session Butler — serving at http://%s  (Ctrl-C to stop)\n", addr)
+	if err := srv.ListenAndServe(addr); err != nil {
+		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
 		os.Exit(1)
 	}
 }

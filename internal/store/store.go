@@ -202,6 +202,20 @@ func (s *Store) Delete(sess agent.Session) error {
 	return nil
 }
 
+// DeleteByID finds a session by its id (via a fresh scan) and deletes it.
+// Returns an error if no session matches or the delete fails. Used by callers
+// that only have an id (e.g. the HTTP layer).
+func (s *Store) DeleteByID(id string) error {
+	for _, g := range s.Scan() {
+		for _, sess := range g.Sessions {
+			if sess.ID == id {
+				return s.Delete(sess)
+			}
+		}
+	}
+	return fmt.Errorf("no session with id %q", id)
+}
+
 // group buckets sessions by cwd; newest session first within a group, and
 // groups ordered by their most recent activity.
 func group(sessions []agent.Session) []Group {
