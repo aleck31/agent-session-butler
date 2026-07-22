@@ -1,4 +1,5 @@
 # Build output
+.dev/
 /bin/
 /dist/
 /asbutler
@@ -11,6 +12,3 @@ coverage.*
 
 # OS
 .DS_Store
-
-# Local Claude settings
-.claude/settings.local.json

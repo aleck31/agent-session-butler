@@ -119,10 +119,14 @@ func (a KiroAgent) parse(sid string, paths []string) (Session, bool) {
 		FileSize:     totalSize,
 		ModifiedAt:   newest,
 		Locked:       locked,
-		PrimaryPath:  jsonPath,
+		CacheKey:     jsonPath,
 		FilePaths:    paths,
 	}, true
 }
+
+// Delete removes the session's file bundle. Kiro sessions are plain files with
+// no shadow index, so removing them directly is safe.
+func (KiroAgent) Delete(s Session) error { return deleteFiles(s) }
 
 // Enrich fills only the message count for Kiro (the title is already known from
 // .json at scan time), by streaming the .jsonl event log and tallying Prompt

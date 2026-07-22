@@ -66,7 +66,7 @@ type Store struct {
 	agents []agent.Agent
 
 	mu    sync.RWMutex
-	cache map[string]cacheEntry // keyed by PrimaryPath
+	cache map[string]cacheEntry // keyed by CacheKey
 }
 
 // New builds a store with the default agent registry. Order is cosmetic only
@@ -76,6 +76,7 @@ func New() *Store {
 		agents: []agent.Agent{
 			agent.KiroAgent{},
 			agent.ClaudeCodeAgent{},
+			agent.HermesAgent{},
 		},
 		cache: map[string]cacheEntry{},
 	}
@@ -134,7 +135,7 @@ func (s *Store) Scan() []Group {
 	live := make(map[string]struct{}, len(scanned))
 	for i, sc := range scanned {
 		merged[i] = s.mergedLocked(sc)
-		live[sc.PrimaryPath] = struct{}{}
+		live[sc.CacheKey] = struct{}{}
 	}
 	// Drop cache entries for files that no longer exist.
 	for k := range s.cache {
@@ -151,7 +152,7 @@ func (s *Store) Scan() []Group {
 // (same mtime); otherwise returns the freshly-scanned session as-is. Caller
 // holds s.mu.
 func (s *Store) mergedLocked(scanned agent.Session) agent.Session {
-	if hit, ok := s.cache[scanned.PrimaryPath]; ok && hit.mtime.Equal(scanned.ModifiedAt) {
+	if hit, ok := s.cache[scanned.CacheKey]; ok && hit.mtime.Equal(scanned.ModifiedAt) {
 		return hit.session
 	}
 	return scanned
@@ -166,7 +167,7 @@ func (s *Store) EnrichGroup(g Group) Group {
 			continue
 		}
 		s.mu.RLock()
-		hit, ok := s.cache[sess.PrimaryPath]
+		hit, ok := s.cache[sess.CacheKey]
 		s.mu.RUnlock()
 		if ok && hit.mtime.Equal(sess.ModifiedAt) {
 			g.Sessions[i] = hit.session
@@ -179,25 +180,28 @@ func (s *Store) EnrichGroup(g Group) Group {
 		enriched := a.Enrich(sess)
 		g.Sessions[i] = enriched
 		s.mu.Lock()
-		s.cache[enriched.PrimaryPath] = cacheEntry{mtime: enriched.ModifiedAt, session: enriched}
+		s.cache[enriched.CacheKey] = cacheEntry{mtime: enriched.ModifiedAt, session: enriched}
 		s.mu.Unlock()
 	}
 	return g
 }
 
-// Delete permanently removes a session's files. Refuses locked sessions (a live
-// agent owns them). Returns an error message, or nil on success.
+// Delete permanently removes a session, delegating to the owning agent (file
+// agents remove files; Hermes shells out to its CLI). Refuses locked sessions
+// (a live agent owns them). Returns an error message, or nil on success.
 func (s *Store) Delete(sess agent.Session) error {
 	if sess.Locked {
 		return fmt.Errorf("session is in use by a running process")
 	}
-	for _, p := range sess.FilePaths {
-		if err := os.RemoveAll(p); err != nil {
-			return fmt.Errorf("failed to delete %s: %w", lastPathComponent(p), err)
-		}
+	a := s.agentNamed(sess.Agent)
+	if a == nil {
+		return fmt.Errorf("unknown agent %q", sess.Agent)
+	}
+	if err := a.Delete(sess); err != nil {
+		return err
 	}
 	s.mu.Lock()
-	delete(s.cache, sess.PrimaryPath)
+	delete(s.cache, sess.CacheKey)
 	s.mu.Unlock()
 	return nil
 }

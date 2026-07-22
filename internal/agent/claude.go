@@ -117,9 +117,17 @@ func (a ClaudeCodeAgent) parse(path string) (Session, bool) {
 		FileSize:     fileSize,
 		ModifiedAt:   modified,
 		Locked:       false,
-		PrimaryPath:  path,
+		CacheKey:     path,
 		FilePaths:    []string{path},
 	}, true
+}
+
+// primaryFile returns the single .jsonl this session is stored in.
+func (ClaudeCodeAgent) primaryFile(s Session) string {
+	if len(s.FilePaths) > 0 {
+		return s.FilePaths[0]
+	}
+	return ""
 }
 
 // Enrich does one pass over the file: tally user/assistant messages and resolve
@@ -127,7 +135,7 @@ func (a ClaudeCodeAgent) parse(path string) (Session, bool) {
 func (a ClaudeCodeAgent) Enrich(s Session) Session {
 	count := 0
 	var aiTitle, firstUserText string
-	forEachLine(s.PrimaryPath, func(line string) bool {
+	forEachLine(a.primaryFile(s), func(line string) bool {
 		var obj map[string]any
 		if json.Unmarshal([]byte(line), &obj) != nil {
 			return true
@@ -157,7 +165,7 @@ func (a ClaudeCodeAgent) Enrich(s Session) Session {
 		resolved = t
 	}
 	if resolved == "" {
-		resolved = strings.TrimSuffix(filepath.Base(s.PrimaryPath), ".jsonl")
+		resolved = strings.TrimSuffix(filepath.Base(a.primaryFile(s)), ".jsonl")
 	}
 	if resolved == "" {
 		resolved = "(untitled)"
@@ -167,6 +175,9 @@ func (a ClaudeCodeAgent) Enrich(s Session) Session {
 	s.Title = resolved
 	return s
 }
+
+// Delete removes the session's .jsonl file.
+func (ClaudeCodeAgent) Delete(s Session) error { return deleteFiles(s) }
 
 // extractText pulls plain text from a `message` field (content may be a string
 // or an array of parts).

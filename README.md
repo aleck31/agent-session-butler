@@ -18,10 +18,13 @@ A single static Go binary. Runs on Linux, macOS, and Windows. Provides a termina
 
 ### Supported agents
 
-| Agent | Session location |
-|-------|------------------|
-| Kiro | `~/.kiro/sessions/cli/` |
+| Agent | Session storage |
+|-------|-----------------|
+| Kiro | files under `~/.kiro/sessions/cli/` |
 | Claude Code | `~/.claude/projects/<encoded-cwd>/*.jsonl` |
+| Hermes | SQLite `state.db` per profile under `$HERMES_HOME` (default `~/.hermes`) |
+
+Most agents keep sessions as files; **Hermes** stores them as rows in a per-profile SQLite database. The tool opens each `state.db` read-only (respecting the gateway's WAL writes) and never writes to it — deletion goes through `hermes sessions delete`, which also clears the FTS index. Hermes has no per-session byte size, so its size is approximated from token counts. A Hermes session is lock-protected only when its profile's gateway is running and that session is the one the gateway currently holds.
 
 Agent Session Butler is **read-only except for deletion** — it never modifies session content.
 
@@ -70,6 +73,7 @@ internal/agent/
   agent.go                    Agent interface, Session, streaming jsonl reader
   kiro.go                     KiroAgent (.json + .jsonl bundle)
   claude.go                   ClaudeCodeAgent (.jsonl; cwd read from contents)
+  hermes.go                   HermesAgent (per-profile SQLite; delete via CLI)
   lock_unix.go                live-PID lock check (syscall.Kill)
   lock_windows.go             live-PID lock check (OpenProcess)
 internal/store/
