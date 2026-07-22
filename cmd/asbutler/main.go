@@ -15,7 +15,7 @@ import (
 )
 
 // version is the release version, printed by `asbutler version`.
-const version = "0.5.0"
+const version = "0.5.1"
 
 func main() {
 	args := os.Args[1:]

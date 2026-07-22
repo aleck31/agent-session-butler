@@ -142,6 +142,9 @@
   td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
   td.title { max-width: 420px; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
   td.id, td.agent { color: var(--muted); }
+  /* Session id doubles as a copy button: looks like the id text, flashes on copy. */
+  .idcopy { font: inherit; color: var(--muted); background: none; border: none; padding: 0; cursor: pointer; }
+  .idcopy:hover { color: var(--ink); text-decoration: underline; text-decoration-style: dotted; }
   .lock { color: var(--live); }
   .ck { accent-color: var(--sel-bord); cursor: pointer; }
   .rowdel { color: var(--faint); background: none; border: none; cursor: pointer; font: inherit; padding: 2px 6px; border-radius: 4px; }
@@ -191,8 +194,8 @@
       </div>
 
       <div class="side-list">
-        <template x-for="g in filteredGroups()" :key="g.cwd">
-          <div class="dir" :class="{ sel: selectedCwd === g.cwd, orphan: g.orphan }" @click="selectDir(g)">
+        <template x-for="g in filteredGroups()" :key="gkey(g)">
+          <div class="dir" :class="{ sel: selectedKey === gkey(g), orphan: g.orphan }" @click="selectDir(g)">
             <span class="ic">📁</span>
             <div class="dir-txt">
               <div class="dir-name" x-text="g.displayName || g.cwd"></div>
@@ -273,7 +276,10 @@
                     <td class="num" x-text="s.messageCount != null ? s.messageCount + ' msgs' : '·'"></td>
                     <td class="num" x-text="s.sizeHuman"></td>
                     <td x-text="fmtDate(s.modifiedAt)"></td>
-                    <td class="id c-id" x-text="shortId(s.id)"></td>
+                    <td class="id c-id">
+                      <button class="idcopy" :title="`${s.id}\n(click to copy)`" @click="copyID(s.id)"
+                              x-text="copiedID === s.id ? 'copied ✓' : shortId(s.id)"></button>
+                    </td>
                     <td style="text-align:right">
                       <button class="rowdel" :disabled="s.locked" @click="askDeleteOne(s)" title="Delete">🗑</button>
                     </td>
@@ -312,10 +318,11 @@
 function butler() {
   return {
     summary: null, loading: false, dirQuery: '',
-    selectedCwd: null, enriched: {},
+    selectedKey: null, enriched: {},
     selectedIds: new Set(),
     sort: { key: 'modifiedAt', dir: 'desc' },
     pending: null, deleting: false, delError: '',
+    copiedID: null,   // session id currently showing the "copied ✓" flash
     theme: 'dark',
     activeAgents: new Set(),   // agents currently shown; all discovered agents by default
     sideWidth: 320, resizing: false,
@@ -368,15 +375,17 @@ function butler() {
         const discovered = this.summary.agents || [];
         if (this.activeAgents.size === 0) this.activeAgents = new Set(discovered);
         else this.activeAgents = new Set([...this.activeAgents].filter(a => discovered.includes(a)));
-        // Keep the current selection if that cwd still exists.
-        if (this.selectedCwd && !this.summary.groups.some(g => g.cwd === this.selectedCwd)) {
-          this.selectedCwd = null;
+        // Keep the current selection if that group still exists.
+        if (this.selectedKey && !this.summary.groups.some(g => this.gkey(g) === this.selectedKey)) {
+          this.selectedKey = null;
         }
         if (this.selected) this.selectDir(this.selected); // re-enrich
       } finally { this.loading = false; }
     },
 
-    get selected() { return (this.summary?.groups || []).find(g => g.cwd === this.selectedCwd) || null; },
+    // Composite group key: profile + cwd (profile is "" for Kiro/Claude).
+    gkey(g) { return (g.profile || '') + '\x00' + g.cwd; },
+    get selected() { return (this.summary?.groups || []).find(g => this.gkey(g) === this.selectedKey) || null; },
 
     human(n) {
       if (n == null) return '—';
@@ -390,6 +399,22 @@ function butler() {
     },
     shortId(id) { return id.length > 8 ? id.slice(0, 8) : id; },
 
+    // Copy a full session id to the clipboard, with a brief "copied ✓" flash.
+    async copyID(id) {
+      try {
+        await navigator.clipboard.writeText(id);
+      } catch (_) {
+        // Fallback for non-secure contexts where the Clipboard API is blocked.
+        const ta = document.createElement('textarea');
+        ta.value = id; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); } catch (_) {}
+        document.body.removeChild(ta);
+      }
+      this.copiedID = id;
+      setTimeout(() => { if (this.copiedID === id) this.copiedID = null; }, 1200);
+    },
+
     toggleAgent(a) {
       const next = new Set(this.activeAgents);
       next.has(a) ? next.delete(a) : next.add(a);
@@ -398,7 +423,7 @@ function butler() {
       if (next.size === 0) next.add(a);
       this.activeAgents = next;
       // If the selected directory no longer has any visible session, clear it.
-      if (this.selected && !this.groupHasActive(this.selected)) this.selectedCwd = null;
+      if (this.selected && !this.groupHasActive(this.selected)) this.selectedKey = null;
     },
     groupHasActive(g) { return (g.sessions || []).some(s => this.activeAgents.has(s.agent)); },
     activeInGroup(g) { return (g.sessions || []).filter(s => this.activeAgents.has(s.agent)).length; },
@@ -443,18 +468,19 @@ function butler() {
     },
 
     async selectDir(g) {
-      this.selectedCwd = g.cwd;
+      const key = this.gkey(g);
+      this.selectedKey = key;
       this.selectedIds = new Set();
-      if (!this.enriched[g.cwd]) {
-        this.enriched[g.cwd] = true;
+      if (!this.enriched[key]) {
+        this.enriched[key] = true;
         try {
-          const r = await fetch('/api/enrich', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ cwd: g.cwd }) });
+          const r = await fetch('/api/enrich', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ cwd: g.cwd, profile: g.profile || '' }) });
           if (r.ok) {
             const fresh = await r.json();
-            const idx = this.summary.groups.findIndex(x => x.cwd === g.cwd);
+            const idx = this.summary.groups.findIndex(x => this.gkey(x) === key);
             if (idx >= 0) this.summary.groups[idx].sessions = fresh.sessions;
           }
-        } catch (_) { this.enriched[g.cwd] = false; }
+        } catch (_) { this.enriched[key] = false; }
       }
     },
 
@@ -528,10 +554,11 @@ function butler() {
       if (g.orphan) this.summary.orphanSize -= s.fileSize;
       const sel = new Set(this.selectedIds); sel.delete(id); this.selectedIds = sel;
       if (g.sessionCount === 0) {
-        this.summary.groups = this.summary.groups.filter(x => x.cwd !== g.cwd);
+        const gk = this.gkey(g);
+        this.summary.groups = this.summary.groups.filter(x => this.gkey(x) !== gk);
         this.summary.totalGroups--;
         if (g.orphan) this.summary.orphanCount--;
-        if (this.selectedCwd === g.cwd) this.selectedCwd = null;
+        if (this.selectedKey === gk) this.selectedKey = null;
       }
     },
   };

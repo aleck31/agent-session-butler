@@ -12,16 +12,10 @@ import (
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no CGO — keeps cross-compile trivial)
 )
 
-// HermesAgent: Hermes stores sessions in SQLite, not files. Each profile has
-// its own state.db:
-//
-//	$HERMES_HOME/state.db                    — the root/default profile
-//	$HERMES_HOME/profiles/<name>/state.db    — one per named profile
-//
-// A session is a row in the `sessions` table (id, title, cwd, message_count,
-// started_at, ended_at, …). We open every state.db read-only (mode=ro respects
-// the gateway's WAL writes) and never touch the DB to delete — that goes through
-// `hermes sessions delete`, which also clears the FTS shadow tables.
+// HermesAgent reads Hermes sessions from per-profile SQLite state.db files
+// ($HERMES_HOME/state.db and profiles/*/state.db). A session is a row in the
+// `sessions` table. DBs are opened read-only (mode=ro, WAL-safe); deletion goes
+// through the `hermes` CLI, never raw SQL (which would corrupt the FTS index).
 type HermesAgent struct{}
 
 func (HermesAgent) Name() string { return "Hermes" }
@@ -38,10 +32,10 @@ func hermesHome() string {
 	return filepath.Join(home, ".hermes")
 }
 
-// dbEntry is one state.db and the profile it belongs to (empty profile = root).
+// dbEntry is one state.db and the profile it belongs to.
 type dbEntry struct {
 	path    string
-	profile string // "" for the root/default profile
+	profile string // "default" for the root state.db, else the profile dir name
 }
 
 // databases enumerates the root state.db plus each profiles/*/state.db. It
@@ -53,7 +47,7 @@ func hermesDatabases() []dbEntry {
 	}
 	var out []dbEntry
 	if fileExists(filepath.Join(root, "state.db")) {
-		out = append(out, dbEntry{path: filepath.Join(root, "state.db"), profile: ""})
+		out = append(out, dbEntry{path: filepath.Join(root, "state.db"), profile: "default"})
 	}
 	profileDirs, err := os.ReadDir(filepath.Join(root, "profiles"))
 	if err != nil {
@@ -71,8 +65,28 @@ func hermesDatabases() []dbEntry {
 	return out
 }
 
+// Installed reports true only if some state.db actually holds a CLI session.
+// A bare state.db can exist with no sessions (e.g. a default ~/.hermes that was
+// never used), which shouldn't surface Hermes with an empty listing.
 func (HermesAgent) Installed() bool {
-	return len(hermesDatabases()) > 0
+	for _, db := range hermesDatabases() {
+		if dbHasCLISession(db.path) {
+			return true
+		}
+	}
+	return false
+}
+
+// dbHasCLISession does a cheap existence probe (LIMIT 1), not a full scan.
+func dbHasCLISession(path string) bool {
+	conn, err := openRO(path)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	var one int
+	err = conn.QueryRow(`SELECT 1 FROM sessions WHERE source = 'cli' LIMIT 1`).Scan(&one)
+	return err == nil
 }
 
 func (a HermesAgent) Scan() []Session {
@@ -96,9 +110,12 @@ func (a HermesAgent) scanDB(db dbEntry) []Session {
 	}
 	defer conn.Close()
 
-	active := activeSessionIDs(conn, db) // ids the running gateway holds → locked
+	active := activeSessionIDs(conn, db)  // ids the running gateway holds → locked
+	bytesByID := contentBytes(conn)       // session_id → total message content bytes
 
-	rows, err := conn.Query(`SELECT id, title, cwd, message_count, started_at, ended_at, archived, input_tokens, output_tokens FROM sessions`)
+	// Only interactive CLI sessions — same scope as Kiro/Claude Code. Channel/
+	// cron/imported sessions have no meaningful cwd and would flood the listing.
+	rows, err := conn.Query(`SELECT id, title, cwd, message_count, started_at, ended_at, archived FROM sessions WHERE source = 'cli'`)
 	if err != nil {
 		return nil
 	}
@@ -111,8 +128,7 @@ func (a HermesAgent) scanDB(db dbEntry) []Session {
 		var msgCount sql.NullInt64
 		var startedAt, endedAt sql.NullFloat64
 		var archived sql.NullInt64
-		var inTokens, outTokens sql.NullInt64
-		if rows.Scan(&id, &title, &cwd, &msgCount, &startedAt, &endedAt, &archived, &inTokens, &outTokens) != nil {
+		if rows.Scan(&id, &title, &cwd, &msgCount, &startedAt, &endedAt, &archived) != nil {
 			continue
 		}
 
@@ -120,10 +136,8 @@ func (a HermesAgent) scanDB(db dbEntry) []Session {
 		if c == "" {
 			c = "(unknown)"
 		}
-		// ended_at is the session's last activity; fall back to started_at when
-		// it's missing/zero (session never formally ended).
 		ts := endedAt.Float64
-		if ts == 0 {
+		if ts == 0 { // ended_at missing/zero → session never formally ended
 			ts = startedAt.Float64
 		}
 		mc := int(msgCount.Int64)
@@ -134,15 +148,33 @@ func (a HermesAgent) scanDB(db dbEntry) []Session {
 			Cwd:          c,
 			Title:        hermesTitle(title.String, id),
 			MessageCount: &mc, // sessions.message_count is authoritative; no Enrich needed
-			// No real per-session byte size (DB-backed). Approximate content
-			// volume from tokens (~4 bytes/token) so the usage bar and Size
-			// column carry a meaningful magnitude, not a flat 0.
-			FileSize:   (inTokens.Int64 + outTokens.Int64) * 4,
-			ModifiedAt: unixToTime(ts),
+			// DB-backed: no file size. Use total message-content bytes (near-
+			// complete coverage, unlike the sparse token columns); 0 if none.
+			FileSize:     bytesByID[id],
+			ModifiedAt:   unixToTime(ts),
 			Locked:       active[id],
 			CacheKey:     db.path + "#" + id,
 			Extra:        map[string]string{"profile": db.profile},
 		})
+	}
+	return out
+}
+
+// contentBytes returns, per session id, the total byte length of its message
+// content — computed in one grouped pass over the messages table.
+func contentBytes(conn *sql.DB) map[string]int64 {
+	rows, err := conn.Query(`SELECT session_id, sum(length(content)) FROM messages GROUP BY session_id`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var id string
+		var n sql.NullInt64
+		if rows.Scan(&id, &n) == nil {
+			out[id] = n.Int64
+		}
 	}
 	return out
 }
@@ -156,7 +188,8 @@ func (HermesAgent) Enrich(s Session) Session { return s }
 // profile is selected with -p; the root/default profile takes no flag.
 func (HermesAgent) Delete(s Session) error {
 	args := []string{"sessions", "delete", s.ID, "-y"}
-	if p := s.Extra["profile"]; p != "" {
+	// Root/default profile takes no -p flag (bare HERMES_HOME = default).
+	if p := s.Extra["profile"]; p != "" && p != "default" {
 		args = append(args, "-p", p)
 	}
 	cmd := exec.Command("hermes", args...)
@@ -232,16 +265,13 @@ func hermesTitle(raw, id string) string {
 	return "(untitled · " + hermesShortID(id) + ")"
 }
 
-// hermesShortID picks a distinguishing suffix. Native ids are
-// <date>_<time>_<hash> and imported ones are UUIDs — the leading segment is a
-// shared date/prefix, so use the trailing hash after the last '_' (or the UUID
-// head as a fallback) to keep untitled rows apart.
+// hermesShortID returns a short distinguishing suffix of the id. The id is an
+// opaque primary key — three formats coexist (timestamp, cron_-prefixed, UUID)
+// and MUST NOT be parsed. Every format's most-distinguishing part is its tail
+// (leading segments share a date/prefix), so take the last 8 chars verbatim.
 func hermesShortID(id string) string {
-	if i := strings.LastIndexByte(id, '_'); i >= 0 && i+1 < len(id) {
-		return id[i+1:]
-	}
 	if len(id) > 8 {
-		return id[:8]
+		return id[len(id)-8:]
 	}
 	return id
 }

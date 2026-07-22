@@ -12,17 +12,24 @@ import (
 	"github.com/aleck/agent-session-butler/internal/agent"
 )
 
-// Group is a set of sessions sharing a working directory.
+// Group is a set of sessions sharing a working directory (and, for agents that
+// have profiles like Hermes, the same profile — so the same cwd under different
+// profiles forms distinct groups).
 type Group struct {
 	Cwd      string          `json:"cwd"`
+	Profile  string          `json:"profile"` // "" for agents without profiles
 	Sessions []agent.Session `json:"sessions"`
 }
 
-// DisplayName is the last path component, for a compact label.
+// DisplayName is the cwd's last path component, tagged with the profile when
+// present (e.g. "agent-manager <x-tec>").
 func (g Group) DisplayName() string {
 	name := lastPathComponent(g.Cwd)
 	if name == "" {
-		return g.Cwd
+		name = g.Cwd
+	}
+	if g.Profile != "" {
+		return name + " <" + g.Profile + ">"
 	}
 	return name
 }
@@ -223,16 +230,20 @@ func (s *Store) DeleteByID(id string) error {
 // group buckets sessions by cwd; newest session first within a group, and
 // groups ordered by their most recent activity.
 func group(sessions []agent.Session) []Group {
-	byCwd := map[string][]agent.Session{}
+	// Key by profile + cwd so the same directory under different Hermes profiles
+	// forms distinct groups. Agents without profiles use an empty profile, so
+	// this degrades to plain cwd grouping for Kiro/Claude Code.
+	type key struct{ profile, cwd string }
+	byKey := map[key][]agent.Session{}
 	for _, s := range sessions {
-		byCwd[s.Cwd] = append(byCwd[s.Cwd], s)
+		byKey[key{s.Extra["profile"], s.Cwd}] = append(byKey[key{s.Extra["profile"], s.Cwd}], s)
 	}
-	groups := make([]Group, 0, len(byCwd))
-	for cwd, items := range byCwd {
+	groups := make([]Group, 0, len(byKey))
+	for k, items := range byKey {
 		sort.Slice(items, func(i, j int) bool {
 			return items[i].ModifiedAt.After(items[j].ModifiedAt)
 		})
-		groups = append(groups, Group{Cwd: cwd, Sessions: items})
+		groups = append(groups, Group{Cwd: k.cwd, Profile: k.profile, Sessions: items})
 	}
 	sort.Slice(groups, func(i, j int) bool {
 		return groups[i].LatestModified().After(groups[j].LatestModified())

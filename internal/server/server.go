@@ -72,6 +72,7 @@ type sessionView struct {
 // CwdExists/TotalSize/DisplayName are methods, not serialized fields).
 type groupView struct {
 	Cwd            string        `json:"cwd"`
+	Profile        string        `json:"profile"` // "" for agents without profiles (Kiro/Claude)
 	DisplayName    string        `json:"displayName"`
 	Orphan         bool          `json:"orphan"` // working directory no longer exists
 	SessionCount   int           `json:"sessionCount"`
@@ -122,6 +123,7 @@ func toSessionView(s store.Group) []sessionView {
 func toGroupView(g store.Group) groupView {
 	return groupView{
 		Cwd:            g.Cwd,
+		Profile:        g.Profile,
 		DisplayName:    g.DisplayName(),
 		Orphan:         !g.CwdExists(),
 		SessionCount:   len(g.Sessions),
@@ -164,23 +166,26 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sum)
 }
 
-// handleEnrich enriches one cwd's sessions (message counts + titles) on demand,
-// so the initial listing stays fast. Body: {"cwd": "..."}.
+// handleEnrich enriches one group's sessions (message counts + titles) on
+// demand, so the initial listing stays fast. A group is identified by cwd +
+// profile (the same cwd under different Hermes profiles is distinct).
+// Body: {"cwd": "...", "profile": "..."}.
 func (s *Server) handleEnrich(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Cwd string `json:"cwd"`
+		Cwd     string `json:"cwd"`
+		Profile string `json:"profile"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Cwd == "" {
 		writeError(w, http.StatusBadRequest, "expected JSON body with a non-empty \"cwd\"")
 		return
 	}
 	for _, g := range s.store.Scan() {
-		if g.Cwd == req.Cwd {
+		if g.Cwd == req.Cwd && g.Profile == req.Profile {
 			writeJSON(w, http.StatusOK, toGroupView(s.store.EnrichGroup(g)))
 			return
 		}
 	}
-	writeError(w, http.StatusNotFound, "no directory group for that cwd")
+	writeError(w, http.StatusNotFound, "no directory group for that cwd/profile")
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {

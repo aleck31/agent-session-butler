@@ -76,6 +76,7 @@ func (a ClaudeCodeAgent) parse(path string) (Session, bool) {
 
 	var cwd, sessionID string
 	sawAnyLine := false
+	sawConversation := false // any user/assistant line — i.e. a real chat
 
 	forEachLine(path, func(line string) bool {
 		var obj map[string]any
@@ -83,6 +84,9 @@ func (a ClaudeCodeAgent) parse(path string) (Session, bool) {
 			return true // skip unparsable line, keep going
 		}
 		sawAnyLine = true
+		if t, _ := obj["type"].(string); t == "user" || t == "assistant" {
+			sawConversation = true
+		}
 		if cwd == "" {
 			if c, ok := obj["cwd"].(string); ok {
 				cwd = c
@@ -93,10 +97,17 @@ func (a ClaudeCodeAgent) parse(path string) (Session, bool) {
 				sessionID = s
 			}
 		}
-		// Stop as soon as we have both — no need to read the rest.
-		return cwd == "" || sessionID == ""
+		// Keep reading until we've confirmed a real conversation AND have both
+		// cwd and sessionId. cwd only appears on user/assistant rows, so a file
+		// that never yields cwd is scanned in full and revealed as metadata-only.
+		return !sawConversation || cwd == "" || sessionID == ""
 	})
 	if !sawAnyLine {
+		return Session{}, false
+	}
+	// Skip metadata-only files (only ai-title / agent-name rows, no chat): they
+	// have no conversation, no cwd, and 0 messages — not real sessions.
+	if !sawConversation {
 		return Session{}, false
 	}
 
