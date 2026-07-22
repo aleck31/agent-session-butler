@@ -52,6 +52,13 @@
   [x-cloak] { display: none !important; }
   .sans { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 
+  /* Themed scrollbars so scrollable panes match the surface, not the OS default. */
+  * { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--faint); background-clip: content-box; }
+
   /* ── App shell: fixed masthead + two-column body ─────────────────────── */
   .app { display: flex; flex-direction: column; height: 100vh; }
   .mast {
@@ -96,15 +103,15 @@
   .dir { padding: 9px 16px; cursor: pointer; border-left: 3px solid transparent; display: flex; align-items: center; gap: 10px; }
   .dir:hover { background: var(--panel-2); }
   .dir.sel { background: var(--sel); border-left-color: var(--sel-bord); }
-  .dir.orphan { border-left-color: var(--orphan); }
-  .dir.orphan.sel { border-left-color: var(--sel-bord); }
   .dir .ic { color: var(--faint); flex: none; }
   .dir-txt { min-width: 0; flex: 1; }
   .dir-name { font-size: 13px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .dir-path { font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
-  .dir-badge { font-size: 11px; color: var(--muted); background: var(--panel-2); border-radius: 10px; padding: 1px 8px; flex: none; }
+  .dir-badge { font-size: 11px; color: var(--muted); background: var(--panel-2); border-radius: 10px; padding: 1px 8px; flex: none; min-width: 30px; text-align: center; }
   .dir.sel .dir-badge { background: var(--sel-bord); color: #fff; }
-  .mini-missing { color: var(--orphan); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+  /* margin-left:auto pins MISSING to a fixed right column, so a varying badge
+     width (1 vs 2 digits) doesn't shift it row-to-row. */
+  .mini-missing { flex: none; margin-left: auto; color: var(--orphan); font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em; border: 1px solid var(--orphan); border-radius: 4px; padding: 0 5px; }
 
   /* ── Detail pane ─────────────────────────────────────────────────────── */
   .detail { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -116,7 +123,9 @@
 
   /* ── Persistent compact summary strip (top of detail pane) ───────────── */
   .summary-strip { height: var(--head-h); padding: 0 22px; border-bottom: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; justify-content: center; gap: 8px; }
+  .summary-head { display: flex; align-items: center; gap: 12px; }
   .summary-title { font-family: system-ui, sans-serif; font-size: 16px; font-weight: 600; color: var(--ink); }
+  .summary-head .btn { margin-left: auto; }
   .usagebar { height: 9px; border-radius: 4px; overflow: hidden; display: flex; background: var(--panel-2); border: 1px solid var(--line); }
   .usagebar > span { height: 100%; transition: width .45s ease; min-width: 2px; }
   .summary-nums { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
@@ -135,10 +144,11 @@
   }
   thead th.nosort { cursor: default; }
   thead th:hover:not(.nosort) { color: var(--muted); }
-  th .arrow { color: var(--live); margin-left: 4px; }
+  th .arrow { color: var(--live); margin-left: 3px; width: 13px; height: 13px; }
   tbody tr { border-bottom: 1px solid var(--line); }
   tbody tr:hover { background: var(--panel-2); }
   tbody tr.sel { background: var(--sel); }
+  th.num { text-align: right; } /* numeric headers align with their right-aligned data */
   td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
   td.title { max-width: 420px; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
   td.id, td.agent { color: var(--muted); }
@@ -162,6 +172,15 @@
   .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
   .err { color: var(--danger); font-size: 12.5px; margin-top: 10px; white-space: pre-line; }
 
+  /* Inline Lucide icons (MIT) as <use> refs — sized via em, inherit currentColor. */
+  .icon { width: 1em; height: 1em; stroke: currentColor; stroke-width: 2; fill: none;
+    stroke-linecap: round; stroke-linejoin: round; vertical-align: -0.125em; flex: none; }
+  .btn .icon { width: 15px; height: 15px; }
+  .ic .icon { width: 16px; height: 16px; }
+  .icon.spin { animation: spin .8s linear infinite; transform-origin: center; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .icon.spin { animation: none; } }
+
   @media (max-width: 720px) {
     .side { width: 200px; }
     td.id, th.c-id, td.agent, th.c-agent { display: none; }
@@ -169,14 +188,32 @@
 </style>
 </head>
 <body>
+
+<!-- Lucide icon sprite (MIT). Referenced via <use href="#i-..."> throughout. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/></symbol>
+  <symbol id="i-chevron-up" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+</defs></svg>
+
 <div class="app" x-data="butler()" x-init="load()" x-cloak :style="`--side-w:${sideWidth}px`">
 
   <div class="mast">
     <span class="logo">Agent Session Butler<span class="dot">.</span></span>
     <span class="ver" x-show="summary?.version" x-text="`v${summary?.version}`"></span>
     <span class="spacer"></span>
-    <button class="btn" @click="load()" :disabled="loading" x-text="loading ? 'scanning…' : '↻ rescan'"></button>
-    <button class="btn" @click="toggleTheme()" x-text="theme === 'dark' ? '☀️' : '🌑'" title="Toggle theme"></button>
+    <button class="btn" @click="toggleTheme()" :title="theme === 'dark' ? 'Switch to bright' : 'Switch to dark'">
+      <svg class="icon"><use :href="theme === 'dark' ? '#i-sun' : '#i-moon'"/></svg>
+    </button>
+    <button class="btn" disabled title="Settings (coming soon)">
+      <svg class="icon"><use href="#i-settings"/></svg>
+    </button>
   </div>
 
   <div class="body">
@@ -195,13 +232,13 @@
 
       <div class="side-list">
         <template x-for="g in filteredGroups()" :key="gkey(g)">
-          <div class="dir" :class="{ sel: selectedKey === gkey(g), orphan: g.orphan }" @click="selectDir(g)">
-            <span class="ic">📁</span>
+          <div class="dir" :class="{ sel: selectedKey === gkey(g) }" @click="selectDir(g)">
+            <span class="ic"><svg class="icon"><use href="#i-folder"/></svg></span>
             <div class="dir-txt">
               <div class="dir-name" x-text="g.displayName || g.cwd"></div>
               <div class="dir-path" x-text="g.cwd"></div>
-              <span class="mini-missing" x-show="g.orphan">missing</span>
             </div>
+            <span class="mini-missing" x-show="g.orphan">missing</span>
             <span class="dir-badge" x-text="activeInGroup(g)"></span>
           </div>
         </template>
@@ -217,7 +254,12 @@
 
       <!-- Persistent compact summary strip: title + bar + legend with percentages -->
       <div class="summary-strip" x-show="summary && summary.totalGroups">
-        <div class="summary-title sans">Session storage</div>
+        <div class="summary-head">
+          <span class="summary-title sans">Session storage</span>
+          <button class="btn" @click="load()" :disabled="loading" :title="loading ? 'Scanning…' : 'Rescan'">
+            <svg class="icon" :class="{ spin: loading }"><use href="#i-refresh"/></svg>
+          </button>
+        </div>
         <div class="usagebar" title="Live storage by agent, plus orphaned (reclaimable)">
           <template x-for="(seg, i) in usageSegments()" :key="seg.label">
             <span :style="`width:${seg.pct}%;background:${seg.color}`" :title="`${seg.label}: ${seg.human} · ${seg.pct.toFixed(1)}%`"></span>
@@ -257,12 +299,12 @@
             <table>
               <thead><tr>
                 <th class="nosort" style="width:34px"><input type="checkbox" class="ck" :checked="allSelected()" @change="toggleSelectAll()"></th>
-                <th @click="sortBy('title')">Title <span class="arrow" x-show="sort.key==='title'" x-text="arrow()"></span></th>
-                <th class="c-agent" @click="sortBy('agent')">Agent <span class="arrow" x-show="sort.key==='agent'" x-text="arrow()"></span></th>
-                <th class="num" @click="sortBy('messageCount')">Messages <span class="arrow" x-show="sort.key==='messageCount'" x-text="arrow()"></span></th>
-                <th class="num" @click="sortBy('fileSize')">Size <span class="arrow" x-show="sort.key==='fileSize'" x-text="arrow()"></span></th>
-                <th @click="sortBy('modifiedAt')">Modified <span class="arrow" x-show="sort.key==='modifiedAt'" x-text="arrow()"></span></th>
-                <th class="c-id" @click="sortBy('id')">Session ID <span class="arrow" x-show="sort.key==='id'" x-text="arrow()"></span></th>
+                <th @click="sortBy('title')">Title <svg class="icon arrow" x-show="sort.key==='title'"><use :href="arrowIcon()"/></svg></th>
+                <th class="c-agent" @click="sortBy('agent')">Agent <svg class="icon arrow" x-show="sort.key==='agent'"><use :href="arrowIcon()"/></svg></th>
+                <th class="num" @click="sortBy('messageCount')">Messages <svg class="icon arrow" x-show="sort.key==='messageCount'"><use :href="arrowIcon()"/></svg></th>
+                <th class="num" @click="sortBy('fileSize')">Size <svg class="icon arrow" x-show="sort.key==='fileSize'"><use :href="arrowIcon()"/></svg></th>
+                <th @click="sortBy('modifiedAt')">Modified <svg class="icon arrow" x-show="sort.key==='modifiedAt'"><use :href="arrowIcon()"/></svg></th>
+                <th class="c-id" @click="sortBy('id')">Session ID <svg class="icon arrow" x-show="sort.key==='id'"><use :href="arrowIcon()"/></svg></th>
                 <th class="nosort"></th>
               </tr></thead>
               <tbody>
@@ -270,7 +312,7 @@
                   <tr :class="{ sel: selectedIds.has(s.id) }">
                     <td><input type="checkbox" class="ck" :checked="selectedIds.has(s.id)" :disabled="s.locked" @change="toggleRow(s)"></td>
                     <td class="title" :title="s.title">
-                      <span class="lock" x-show="s.locked" title="Held by a running agent">🔒 </span><span x-text="s.title"></span>
+                      <svg class="icon lock" x-show="s.locked" title="Held by a running agent"><use href="#i-lock"/></svg> <span x-text="s.title"></span>
                     </td>
                     <td class="agent c-agent" x-text="s.agent"></td>
                     <td class="num" x-text="s.messageCount != null ? s.messageCount + ' msgs' : '·'"></td>
@@ -281,7 +323,7 @@
                               x-text="copiedID === s.id ? 'copied ✓' : shortId(s.id)"></button>
                     </td>
                     <td style="text-align:right">
-                      <button class="rowdel" :disabled="s.locked" @click="askDeleteOne(s)" title="Delete">🗑</button>
+                      <button class="rowdel" :disabled="s.locked" @click="askDeleteOne(s)" title="Delete"><svg class="icon"><use href="#i-trash"/></svg></button>
                     </td>
                   </tr>
                 </template>
@@ -488,7 +530,7 @@ function butler() {
       if (this.sort.key === key) this.sort.dir = this.sort.dir === 'asc' ? 'desc' : 'asc';
       else this.sort = { key, dir: key === 'title' || key === 'agent' || key === 'id' ? 'asc' : 'desc' };
     },
-    arrow() { return this.sort.dir === 'asc' ? '▲' : '▼'; },
+    arrowIcon() { return this.sort.dir === 'asc' ? '#i-chevron-up' : '#i-chevron-down'; },
     sortedSessions() {
       const list = (this.selected?.sessions || []).filter(s => this.activeAgents.has(s.agent));
       const { key, dir } = this.sort;

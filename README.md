@@ -24,13 +24,21 @@ A single static Go binary. Runs on Linux, macOS, and Windows. Provides a termina
 | Claude Code | `~/.claude/projects/<encoded-cwd>/*.jsonl` |
 | Hermes | SQLite `state.db` per profile under `$HERMES_HOME` (default `~/.hermes`) |
 
-Most agents keep sessions as files; **Hermes** stores them as rows in a per-profile SQLite database. The tool opens each `state.db` read-only (respecting the gateway's WAL writes) and never writes to it — deletion goes through `hermes sessions delete`, which also clears the FTS index. Hermes has no per-session byte size, so its size is approximated from token counts. A Hermes session is lock-protected only when its profile's gateway is running and that session is the one the gateway currently holds.
+Most agents keep sessions as files; **Hermes** stores them as rows in a per-profile SQLite database. The tool opens each `state.db` read-only (respecting the gateway's WAL writes) and never writes to it — deletion goes through `hermes sessions delete`, which also clears the FTS index. Only interactive CLI sessions are shown (`source = cli`); channel, cron, and imported sessions have no meaningful working directory and are skipped, keeping Hermes in the same "sessions you ran in a directory" scope as Kiro and Claude Code. Since a DB-backed session has no file size, its size is the total byte length of its message content. Sessions are grouped by profile as well as cwd — the same directory under different Hermes profiles forms distinct groups, labelled `name <profile>` (the root database is the `default` profile). A Hermes session is lock-protected only when its profile's gateway is running and that session is the one the gateway currently holds.
 
 Agent Session Butler is **read-only except for deletion** — it never modifies session content.
 
 ## Install / build
 
-Requires Go 1.24+.
+Requires Go 1.25+.
+
+```bash
+./install.sh
+```
+
+This builds `asbutler` and installs it to `~/.local/bin` (override with `BIN_DIR=...`). Run it again any time to upgrade. Then use `asbutler serve`, `asbutler list`, etc. from anywhere.
+
+Or build in place without installing:
 
 ```bash
 go build -o asbutler ./cmd/asbutler
@@ -63,7 +71,7 @@ asbutler help
 
 ### Browser UI (`serve`)
 
-`asbutler serve` starts a local HTTP server and a self-contained browser UI — a two-pane master-detail view. A resizable sidebar (drag its right edge; the width is remembered) lists every working directory with a fixed header of agent-filter chips and a directory search; selecting a directory shows its sessions in a sortable table (Title / Agent / Messages / Size / Modified / Session ID). The agent chips toggle which agents are shown — like the CLI's `--agent`, all discovered agents are on by default. A persistent summary strip at the top of the detail pane carries a disk-usage bar split per agent plus an orphaned segment, each with its size and share of the total. Message counts and titles resolve on demand when a directory is opened. Rows are multi-selectable (Select all) for batch delete, and single or batch deletes go behind a confirmation dialog; sessions held by a running agent are lock-protected. A dark/bright theme toggle is remembered across visits and defaults to the system preference. The frontend (a small Alpine.js app) and its assets are embedded into the binary via `go:embed`, so it needs no network access and ships as a single file. Same core as the CLI — nothing new touches session parsing or deletion.
+`asbutler serve` starts a local HTTP server and a self-contained browser UI — a two-pane master-detail view. A resizable sidebar (drag its right edge; the width is remembered) lists every working directory with a fixed header of agent-filter chips and a directory search; Hermes groups are labelled with their profile (`name <profile>`). Selecting a directory shows its sessions in a sortable table (Title / Agent / Messages / Size / Modified / Session ID; hover a session id to see it in full, click to copy). The agent chips toggle which agents are shown — like the CLI's `--agent`, all discovered agents are on by default. A persistent summary strip at the top of the detail pane carries a disk-usage bar split per agent plus an orphaned segment, each with its size and share of the total. Message counts and titles resolve on demand when a directory is opened. Rows are multi-selectable (Select all) for batch delete, and single or batch deletes go behind a confirmation dialog; sessions held by a running agent are lock-protected. A dark/bright theme toggle is remembered across visits and defaults to the system preference. The frontend (a small Alpine.js app) and its assets are embedded into the binary via `go:embed`, so it needs no network access and ships as a single file. Same core as the CLI — nothing new touches session parsing or deletion.
 
 ## Project layout
 
