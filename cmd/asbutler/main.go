@@ -1,13 +1,18 @@
 // Command asbutler (Agent Session Butler) manages the on-disk chat sessions of
 // your AI coding agents, over a cross-platform core shared by the CLI (list/rm)
-// and the browser UI (serve).
+// and the browser UI (webui).
 package main
 
 import (
 	"fmt"
+	"net"
+	"net/http"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/aleck/agent-session-butler/internal/agent"
 	"github.com/aleck/agent-session-butler/internal/server"
@@ -15,7 +20,7 @@ import (
 )
 
 // version is the release version, printed by `asbutler version`.
-const version = "0.5.2"
+const version = "0.5.3"
 
 func main() {
 	args := os.Args[1:]
@@ -30,8 +35,8 @@ func main() {
 		cmdList(args)
 	case "rm", "delete":
 		cmdRm(args)
-	case "serve":
-		cmdServe(args)
+	case "webui":
+		cmdWebUI(args)
 	case "version", "--version":
 		fmt.Printf("asbutler v%s\n", version)
 	case "help", "-h", "--help":
@@ -52,7 +57,7 @@ Usage:
   asbutler list -o              Only orphaned directories (working dir is gone)
   asbutler list -v              Also show per-session details (message count, title)
   asbutler rm <id>...           Permanently delete sessions by id
-  asbutler serve [--addr host:port]  Start the local browser UI (default 127.0.0.1:7788)
+  asbutler webui [--addr host:port] [--no-open]  Open the local browser UI (default 127.0.0.1:7788)
   asbutler version              Print the version
   asbutler help                 Show this help
 
@@ -217,8 +222,9 @@ func cmdRm(args []string) {
 	}
 }
 
-func cmdServe(args []string) {
+func cmdWebUI(args []string) {
 	addr := "127.0.0.1:7788"
+	open := true
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -227,18 +233,47 @@ func cmdServe(args []string) {
 				addr = args[i+1]
 				i++
 			} else {
-				fmt.Fprintln(os.Stderr, "serve: --addr needs a value (e.g. --addr 127.0.0.1:7788)")
+				fmt.Fprintln(os.Stderr, "webui: --addr needs a value (e.g. --addr 127.0.0.1:7788)")
 				os.Exit(2)
 			}
 		case strings.HasPrefix(a, "--addr="):
 			addr = strings.TrimPrefix(a, "--addr=")
+		case a == "--no-open":
+			open = false
 		}
 	}
 
-	srv := server.New(version)
-	fmt.Printf("Agent Session Butler — serving at http://%s  (Ctrl-C to stop)\n", addr)
-	if err := srv.ListenAndServe(addr); err != nil {
-		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
+	// Bind the socket up front so we can open the browser only once it's ready.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "webui: %v\n", err)
 		os.Exit(1)
 	}
+	url := "http://" + ln.Addr().String()
+	fmt.Printf("Agent Session Butler — serving at %s  (Ctrl-C to stop)\n", url)
+	if open {
+		openBrowser(url)
+	}
+
+	srv := &http.Server{Handler: server.New(version).Handler(), ReadHeaderTimeout: 5 * time.Second}
+	if err := srv.Serve(ln); err != nil {
+		fmt.Fprintf(os.Stderr, "webui: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// openBrowser launches the default browser at url, best-effort — a failure
+// (headless/SSH box with no browser) is ignored, the server still runs.
+func openBrowser(url string) {
+	var cmd string
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = "open"
+	case "windows":
+		cmd, args = "rundll32", []string{"url.dll,FileProtocolHandler"}
+	default:
+		cmd = "xdg-open"
+	}
+	_ = exec.Command(cmd, append(args, url)...).Start()
 }

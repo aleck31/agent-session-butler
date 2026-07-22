@@ -4,7 +4,7 @@
 
 Agent Session Butler auto-discovers the AI coding agents installed on your machine (Kiro, Claude Code, …), groups their chat sessions by working directory, and lets you browse, sort, and clean them up — reclaiming disk space and keeping your session history tidy.
 
-A single static Go binary. Runs on Linux, macOS, and Windows. Provides a terminal CLI and a local `serve` mode with a browser UI.
+A single static Go binary. Runs on Linux, macOS, and Windows. Provides a terminal CLI and a local `webui` mode with a browser UI.
 
 > This is the cross-platform successor to the macOS-only SwiftUI app *SessionSweep*. The portable core (agent discovery, session parsing, grouping, orphan detection, mtime-cached enrichment) carried over; the Apple-specific UI and packaging were dropped.
 
@@ -36,7 +36,7 @@ Requires Go 1.25+.
 ./install.sh
 ```
 
-This builds `asbutler` and installs it to `~/.local/bin` (override with `BIN_DIR=...`). Run it again any time to upgrade. Then use `asbutler serve`, `asbutler list`, etc. from anywhere.
+This builds `asbutler` and installs it to `~/.local/bin` (override with `BIN_DIR=...`). Run it again any time to upgrade. Then use `asbutler webui`, `asbutler list`, etc. from anywhere.
 
 Or build in place without installing:
 
@@ -61,22 +61,23 @@ asbutler list -o              # only orphaned directories (working dir is gone)
 asbutler list -v              # also enrich: message count + resolved title per session
 asbutler list -a kiro -o -v   # filters and detail all combine
 asbutler rm <id>...           # permanently delete sessions by id (locked ones are refused)
-asbutler serve                # local browser UI at http://127.0.0.1:7788
-asbutler serve --addr :8080   # bind a different host:port
+asbutler webui                # open the browser UI (default http://127.0.0.1:7788)
+asbutler webui --addr :8080   # bind a different host:port
+asbutler webui --no-open      # start the server without opening a browser
 asbutler version              # print the version
 asbutler help
 ```
 
 `-a` / `--agent` matches the agent name by case-insensitive substring, so `-a claude` selects "Claude Code" — no need to type the full name. `-o` / `--orphans` keeps only groups whose working directory no longer exists — the prime cleanup candidates. Flags compose, and the summary line reflects the filtered set.
 
-### Browser UI (`serve`)
+### Browser UI (`webui`)
 
-`asbutler serve` starts a local HTTP server and a self-contained browser UI — a two-pane master-detail view. A resizable sidebar (drag its right edge; the width is remembered) lists every working directory with a fixed header of agent-filter chips and a directory search; Hermes groups are labelled with their profile (`name <profile>`). Selecting a directory shows its sessions in a sortable table (Title / Agent / Messages / Size / Modified / Session ID; hover a session id to see it in full, click to copy). The agent chips toggle which agents are shown — like the CLI's `--agent`, all discovered agents are on by default. A persistent summary strip at the top of the detail pane carries a disk-usage bar split per agent plus an orphaned segment, each with its size and share of the total. Message counts and titles resolve on demand when a directory is opened. Rows are multi-selectable (Select all) for batch delete, and single or batch deletes go behind a confirmation dialog; sessions held by a running agent are lock-protected. A dark/bright theme toggle is remembered across visits and defaults to the system preference. The frontend (a small Alpine.js app) and its assets are embedded into the binary via `go:embed`, so it needs no network access and ships as a single file. Same core as the CLI — nothing new touches session parsing or deletion.
+`asbutler webui` starts a local HTTP server, opens it in your default browser (skip with `--no-open`), and serves a self-contained two-pane master-detail view. A resizable sidebar (drag its right edge; the width is remembered) lists every working directory with a fixed header of agent-filter chips and a directory search; Hermes groups are labelled with their profile (`name <profile>`). Selecting a directory shows its sessions in a sortable table (Title / Agent / Messages / Size / Modified / Session ID; hover a session id to see it in full, click to copy). The agent chips toggle which agents are shown — like the CLI's `--agent`, all discovered agents are on by default. A persistent summary strip at the top of the detail pane carries a disk-usage bar split per agent plus an orphaned segment, each with its size and share of the total. Message counts and titles resolve on demand when a directory is opened. Rows are multi-selectable (Select all) for batch delete, and single or batch deletes go behind a confirmation dialog; sessions held by a running agent are lock-protected. A dark/bright theme toggle is remembered across visits and defaults to the system preference. The frontend (a small Alpine.js app) and its assets are embedded into the binary via `go:embed`, so it needs no network access and ships as a single file. Same core as the CLI — nothing new touches session parsing or deletion.
 
 ## Project layout
 
 ```
-cmd/asbutler/main.go          CLI entry point (list / rm / serve / version)
+cmd/asbutler/main.go          CLI entry point (list / rm / webui / version)
 internal/agent/
   agent.go                    Agent interface, Session, streaming jsonl reader
   kiro.go                     KiroAgent (.json + .jsonl bundle)

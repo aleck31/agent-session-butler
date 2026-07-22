@@ -41,18 +41,8 @@ func (s *Server) routes() {
 	s.mux.Handle("/", http.FileServer(http.FS(sub)))
 }
 
-// Handler exposes the router (useful for tests and for wrapping with middleware).
+// Handler exposes the router; the cmd layer builds the http.Server and listener.
 func (s *Server) Handler() http.Handler { return s.mux }
-
-// ListenAndServe starts the HTTP server on addr (e.g. "127.0.0.1:7788").
-func (s *Server) ListenAndServe(addr string) error {
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           s.mux,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	return srv.ListenAndServe()
-}
 
 // --- view models -----------------------------------------------------------
 

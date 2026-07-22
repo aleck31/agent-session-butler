@@ -31,7 +31,7 @@ echo "Installed: $BIN ($("$BIN" version))"
 
 # Warn if the install dir isn't on PATH, with the line to fix it.
 case ":$PATH:" in
-  *":$BIN_DIR:"*) echo "Run it with:  asbutler serve" ;;
+  *":$BIN_DIR:"*) echo "Run it with:  asbutler webui" ;;
   *)
     echo
     echo "note: $BIN_DIR is not on your PATH. Add it, e.g.:"
