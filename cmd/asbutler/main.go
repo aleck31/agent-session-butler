@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -17,10 +18,19 @@ import (
 	"github.com/aleck/agent-session-butler/internal/agent"
 	"github.com/aleck/agent-session-butler/internal/server"
 	"github.com/aleck/agent-session-butler/internal/store"
+	"github.com/aleck/agent-session-butler/internal/view"
 )
 
+// writeJSON prints v as indented JSON to stdout (the default machine-readable
+// output for `list` and `rm`).
+func writeJSON(v any) {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(v)
+}
+
 // version is the release version, printed by `asbutler version`.
-const version = "0.5.3"
+const version = "0.5.4"
 
 func main() {
 	args := os.Args[1:]
@@ -51,12 +61,14 @@ func main() {
 func usage(w *os.File) {
 	fmt.Fprint(w, `Agent Session Butler — manage your AI agents' chat sessions.
 
+Output is JSON by default (for agents); add -H/--human for readable text.
+
 Usage:
-  asbutler list                 List every session, grouped by working directory
+  asbutler list                 List all sessions as JSON (summary + flat array)
+  asbutler list -H              Human-readable listing, grouped by directory
   asbutler list -a <agent>      Only sessions from a matching agent (e.g. -a claude)
   asbutler list -o              Only orphaned directories (working dir is gone)
-  asbutler list -v              Also show per-session details (message count, title)
-  asbutler rm <id>...           Permanently delete sessions by id
+  asbutler rm <id>...           Delete sessions by id; prints JSON results (-H for text)
   asbutler webui [--addr host:port] [--no-open]  Open the local browser UI (default 127.0.0.1:7788)
   asbutler version              Print the version
   asbutler help                 Show this help
@@ -65,14 +77,14 @@ Usage:
 }
 
 func cmdList(args []string) {
-	verbose := false
+	human := false
 	orphansOnly := false
 	agentFilter := ""
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
-		case a == "-v" || a == "--verbose":
-			verbose = true
+		case a == "-H" || a == "--human":
+			human = true
 		case a == "-o" || a == "--orphans":
 			orphansOnly = true
 		case a == "-a" || a == "--agent":
@@ -93,10 +105,6 @@ func cmdList(args []string) {
 
 	s := store.New()
 	installed := s.InstalledAgents()
-	if len(installed) == 0 {
-		fmt.Println("No supported agents found on this machine.")
-		return
-	}
 	groups := s.Scan()
 
 	// Filter each group's sessions by agent name (case-insensitive substring,
@@ -117,10 +125,6 @@ func cmdList(args []string) {
 			}
 		}
 		groups = filtered
-		if len(groups) == 0 {
-			fmt.Printf("No sessions from an agent matching %q. Installed: %v\n", agentFilter, installed)
-			return
-		}
 	}
 
 	// Keep only orphan groups (working directory gone) — the prime cleanup
@@ -133,14 +137,38 @@ func cmdList(args []string) {
 			}
 		}
 		groups = filtered
-		if len(groups) == 0 {
-			fmt.Println("No orphaned directories — every session's working directory still exists.")
-			return
-		}
 	}
 
-	orphans := 0
-	total := 0
+	if human {
+		listHuman(s, installed, groups, agentFilter, orphansOnly)
+		return
+	}
+	// Default: JSON for agents. Enrich everything so message counts and titles
+	// are present (agents shouldn't get lazy nulls), then emit the flat view.
+	for i := range groups {
+		groups[i] = s.EnrichGroup(groups[i])
+	}
+	writeJSON(view.Flat(installed, groups, version))
+}
+
+// listHuman renders the friendly grouped text output (asbutler list --human).
+func listHuman(s *store.Store, installed []string, groups []store.Group, agentFilter string, orphansOnly bool) {
+	if len(installed) == 0 {
+		fmt.Println("No supported agents found on this machine.")
+		return
+	}
+	if len(groups) == 0 {
+		if orphansOnly {
+			fmt.Println("No orphaned directories — every session's working directory still exists.")
+		} else if agentFilter != "" {
+			fmt.Printf("No sessions from an agent matching %q. Installed: %v\n", agentFilter, installed)
+		} else {
+			fmt.Println("No sessions found.")
+		}
+		return
+	}
+
+	orphans, total := 0, 0
 	for _, g := range groups {
 		if !g.CwdExists() {
 			orphans++
@@ -161,12 +189,9 @@ func cmdList(args []string) {
 		}
 		fmt.Printf("● %s%s  (%d sessions, %s)\n",
 			g.Cwd, badge, len(g.Sessions), store.HumanSize(g.TotalSize()))
-
-		if verbose {
-			g = s.EnrichGroup(g)
-			printSessions(g.Sessions)
-			fmt.Println()
-		}
+		g = s.EnrichGroup(g)
+		printSessions(g.Sessions)
+		fmt.Println()
 	}
 }
 
@@ -189,35 +214,54 @@ func printSessions(sessions []agent.Session) {
 	tw.Flush()
 }
 
+// rmResult is one id's deletion outcome (JSON output for agents).
+type rmResult struct {
+	ID      string `json:"id"`
+	Deleted bool   `json:"deleted"`
+	Error   string `json:"error,omitempty"`
+}
+
 func cmdRm(args []string) {
-	if len(args) == 0 {
+	human := false
+	var ids []string
+	for _, a := range args {
+		switch a {
+		case "-H", "--human":
+			human = true
+		default:
+			ids = append(ids, a)
+		}
+	}
+	if len(ids) == 0 {
 		fmt.Fprintln(os.Stderr, "rm: need at least one session id")
 		os.Exit(2)
 	}
-	wanted := map[string]bool{}
-	for _, id := range args {
-		wanted[id] = true
-	}
 
 	s := store.New()
-	groups := s.Scan()
-
-	found := 0
-	for _, g := range groups {
-		for _, sess := range g.Sessions {
-			if !wanted[sess.ID] {
-				continue
-			}
-			found++
-			if err := s.Delete(sess); err != nil {
-				fmt.Fprintf(os.Stderr, "✗ %s: %v\n", sess.ID, err)
-				continue
-			}
-			fmt.Printf("✓ deleted %s (%s, %s)\n", sess.ID, sess.Agent, store.HumanSize(sess.FileSize))
+	results := make([]rmResult, 0, len(ids))
+	anyFail := false
+	for _, id := range ids {
+		err := s.DeleteByID(id)
+		r := rmResult{ID: id, Deleted: err == nil}
+		if err != nil {
+			r.Error = err.Error()
+			anyFail = true
 		}
+		results = append(results, r)
 	}
-	if found == 0 {
-		fmt.Fprintln(os.Stderr, "rm: no matching sessions found")
+
+	if human {
+		for _, r := range results {
+			if r.Deleted {
+				fmt.Printf("✓ deleted %s\n", r.ID)
+			} else {
+				fmt.Fprintf(os.Stderr, "✗ %s: %s\n", r.ID, r.Error)
+			}
+		}
+	} else {
+		writeJSON(results)
+	}
+	if anyFail {
 		os.Exit(1)
 	}
 }

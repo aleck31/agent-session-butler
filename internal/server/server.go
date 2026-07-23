@@ -8,9 +8,9 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
-	"time"
 
 	"github.com/aleck/agent-session-butler/internal/store"
+	"github.com/aleck/agent-session-butler/internal/view"
 )
 
 //go:embed web
@@ -44,116 +44,11 @@ func (s *Server) routes() {
 // Handler exposes the router; the cmd layer builds the http.Server and listener.
 func (s *Server) Handler() http.Handler { return s.mux }
 
-// --- view models -----------------------------------------------------------
-
-// sessionView is one session as sent to the browser.
-type sessionView struct {
-	ID           string    `json:"id"`
-	Agent        string    `json:"agent"`
-	Title        string    `json:"title"`
-	MessageCount *int      `json:"messageCount"`
-	FileSize     int64     `json:"fileSize"`
-	SizeHuman    string    `json:"sizeHuman"`
-	ModifiedAt   time.Time `json:"modifiedAt"`
-	Locked       bool      `json:"locked"`
-}
-
-// groupView is one cwd group, with the derived flags the UI needs (Group's
-// CwdExists/TotalSize/DisplayName are methods, not serialized fields).
-type groupView struct {
-	Cwd            string        `json:"cwd"`
-	Profile        string        `json:"profile"` // "" for agents without profiles (Kiro/Claude)
-	DisplayName    string        `json:"displayName"`
-	Orphan         bool          `json:"orphan"` // working directory no longer exists
-	SessionCount   int           `json:"sessionCount"`
-	TotalSize      int64         `json:"totalSize"`
-	TotalSizeHuman string        `json:"totalSizeHuman"`
-	LatestModified time.Time     `json:"latestModified"`
-	Sessions       []sessionView `json:"sessions"`
-}
-
-// agentUsage is one segment of the disk-usage bar: an agent's live (non-orphan)
-// bytes. Orphaned bytes are reported separately in summaryView.OrphanSize.
-type agentUsage struct {
-	Agent     string `json:"agent"`
-	LiveSize  int64  `json:"liveSize"`
-	SizeHuman string `json:"sizeHuman"`
-}
-
-// summaryView is the top-of-page rollup.
-type summaryView struct {
-	Version     string       `json:"version"`
-	Agents      []string     `json:"agents"`
-	AgentUsage  []agentUsage `json:"agentUsage"` // per-agent live bytes, for the usage bar
-	TotalGroups int          `json:"totalGroups"`
-	TotalCount  int          `json:"totalCount"`
-	TotalSize   int64        `json:"totalSize"`
-	OrphanCount int          `json:"orphanCount"`
-	OrphanSize  int64        `json:"orphanSize"`
-	Groups      []groupView  `json:"groups"`
-}
-
-func toSessionView(s store.Group) []sessionView {
-	out := make([]sessionView, 0, len(s.Sessions))
-	for _, sess := range s.Sessions {
-		out = append(out, sessionView{
-			ID:           sess.ID,
-			Agent:        sess.Agent,
-			Title:        sess.Title,
-			MessageCount: sess.MessageCount,
-			FileSize:     sess.FileSize,
-			SizeHuman:    store.HumanSize(sess.FileSize),
-			ModifiedAt:   sess.ModifiedAt,
-			Locked:       sess.Locked,
-		})
-	}
-	return out
-}
-
-func toGroupView(g store.Group) groupView {
-	return groupView{
-		Cwd:            g.Cwd,
-		Profile:        g.Profile,
-		DisplayName:    g.DisplayName(),
-		Orphan:         !g.CwdExists(),
-		SessionCount:   len(g.Sessions),
-		TotalSize:      g.TotalSize(),
-		TotalSizeHuman: store.HumanSize(g.TotalSize()),
-		LatestModified: g.LatestModified(),
-		Sessions:       toSessionView(g),
-	}
-}
-
 // --- handlers ---------------------------------------------------------------
 
 func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 	groups := s.store.Scan()
-
-	sum := summaryView{Version: s.version, Agents: s.store.InstalledAgents()}
-	sum.Groups = make([]groupView, 0, len(groups))
-	liveByAgent := map[string]int64{} // agent → live (non-orphan) bytes
-	for _, g := range groups {
-		gv := toGroupView(g)
-		sum.Groups = append(sum.Groups, gv)
-		sum.TotalGroups++
-		sum.TotalCount += gv.SessionCount
-		sum.TotalSize += gv.TotalSize
-		if gv.Orphan {
-			sum.OrphanCount++
-			sum.OrphanSize += gv.TotalSize
-		} else {
-			for _, sess := range g.Sessions {
-				liveByAgent[sess.Agent] += sess.FileSize
-			}
-		}
-	}
-	// Emit the usage bar's live segments in installed-agent order (stable colours).
-	for _, name := range sum.Agents {
-		if sz := liveByAgent[name]; sz > 0 {
-			sum.AgentUsage = append(sum.AgentUsage, agentUsage{Agent: name, LiveSize: sz, SizeHuman: store.HumanSize(sz)})
-		}
-	}
-	writeJSON(w, http.StatusOK, sum)
+	writeJSON(w, http.StatusOK, view.Grouped(s.store.InstalledAgents(), groups, s.version))
 }
 
 // handleEnrich enriches one group's sessions (message counts + titles) on
@@ -171,7 +66,7 @@ func (s *Server) handleEnrich(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, g := range s.store.Scan() {
 		if g.Cwd == req.Cwd && g.Profile == req.Profile {
-			writeJSON(w, http.StatusOK, toGroupView(s.store.EnrichGroup(g)))
+			writeJSON(w, http.StatusOK, view.GroupView(s.store.EnrichGroup(g)))
 			return
 		}
 	}
