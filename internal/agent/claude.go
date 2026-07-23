@@ -2,9 +2,13 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 // ClaudeCodeAgent: Claude Code stores sessions as
@@ -189,6 +193,72 @@ func (a ClaudeCodeAgent) Enrich(s Session) Session {
 
 // Delete removes the session's .jsonl file.
 func (ClaudeCodeAgent) Delete(s Session) error { return deleteFiles(s) }
+
+// Relocate re-homes a Claude session to newCwd: it writes the .jsonl into
+// newCwd's encoded project dir (which is how Claude locates it) AND rewrites the
+// cwd field on every line (which is how this tool groups it) so the two agree.
+// Copy uses a fresh uuid and keeps the original; move removes it.
+func (a ClaudeCodeAgent) Relocate(s Session, newCwd string, asCopy bool) (string, error) {
+	src := a.primaryFile(s)
+	if src == "" {
+		return "", errors.New("session has no file")
+	}
+	destDir := filepath.Join(claudeProjectsRoot(), claudeEncodeCwd(newCwd))
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return "", err
+	}
+	id := s.ID
+	if asCopy {
+		id = uuid.NewString()
+	}
+	dst := filepath.Join(destDir, id+".jsonl")
+	if err := claudeRewriteCwd(src, dst, newCwd); err != nil {
+		return "", err
+	}
+	if !asCopy {
+		_ = os.Remove(src) // move: drop the original after writing the new file
+	}
+	return id, nil
+}
+
+// claudeRewriteCwd streams src to dst, setting each JSON line's cwd to newCwd.
+// Non-JSON lines are copied verbatim. Errors (and reading nothing) return an
+// error so a move never deletes the source after a failed write.
+func claudeRewriteCwd(src, dst, newCwd string) error {
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	lines := 0
+	forEachLine(src, func(line string) bool {
+		var obj map[string]any
+		if json.Unmarshal([]byte(line), &obj) == nil {
+			if _, ok := obj["cwd"]; ok {
+				obj["cwd"] = newCwd
+				if b, e := json.Marshal(obj); e == nil {
+					line = string(b)
+				}
+			}
+		}
+		fmt.Fprintln(out, line)
+		lines++
+		return true
+	})
+	if err := out.Close(); err != nil {
+		return err
+	}
+	if lines == 0 {
+		os.Remove(dst)
+		return fmt.Errorf("read no lines from %s", src)
+	}
+	return nil
+}
+
+// claudeEncodeCwd maps a working directory to Claude's project dir name: every
+// '/' and '.' becomes '-'.
+func claudeEncodeCwd(cwd string) string {
+	return strings.NewReplacer("/", "-", ".", "-").Replace(cwd)
+}
 
 // extractText pulls plain text from a `message` field (content may be a string
 // or an array of parts).

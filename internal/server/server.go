@@ -35,6 +35,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/groups", s.handleGroups)
 	s.mux.HandleFunc("POST /api/enrich", s.handleEnrich)
 	s.mux.HandleFunc("DELETE /api/session/{id}", s.handleDelete)
+	s.mux.HandleFunc("POST /api/session/{id}/relocate", s.handleRelocate)
 
 	// Static UI from the embedded web/ dir, served at the root.
 	sub, _ := fs.Sub(webFS, "web")
@@ -84,6 +85,26 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRelocate moves (or copies, if body.copy) a session to a new cwd.
+// Body: {"newCwd": "...", "copy": bool}. Returns {"id": <resulting id>}.
+func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		NewCwd string `json:"newCwd"`
+		Copy   bool   `json:"copy"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NewCwd == "" {
+		writeError(w, http.StatusBadRequest, "expected JSON body with a non-empty \"newCwd\"")
+		return
+	}
+	newID, err := s.store.RelocateByID(id, req.NewCwd, req.Copy)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"id": newID})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

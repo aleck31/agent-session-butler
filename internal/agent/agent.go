@@ -6,6 +6,7 @@ package agent
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -52,7 +53,14 @@ type Agent interface {
 	// Hermes shells out to its CLI (never touches the DB directly). Refusing a
 	// locked session is the store's job, not the agent's.
 	Delete(s Session) error
+	// Relocate re-homes the session to newCwd. When asCopy is false (move) the session's cwd association changes in place; 
+	// when true (copy) the original is kept and a fresh copy is created under a new id. Returns the resulting session's id.
+	// Agents that can't relocate (Hermes) return ErrRelocateUnsupported.
+	Relocate(s Session, newCwd string, asCopy bool) (newID string, err error)
 }
+
+// ErrRelocateUnsupported is returned by agents that don't support relocating.
+var ErrRelocateUnsupported = errors.New("this agent does not support moving/copying sessions")
 
 // deleteFiles removes every file in a file-backed session's bundle. Shared by
 // the file agents (Kiro, Claude Code); Hermes overrides Delete entirely.
@@ -60,6 +68,39 @@ func deleteFiles(s Session) error {
 	for _, p := range s.FilePaths {
 		if err := os.RemoveAll(p); err != nil {
 			return fmt.Errorf("failed to delete %s: %w", filepath.Base(p), err)
+		}
+	}
+	return nil
+}
+
+// copyPath copies a file (or directory tree) from src to dst — used when
+// copying a session's file bundle.
+func copyPath(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return copyTree(src, dst, info)
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, info.Mode().Perm())
+}
+
+func copyTree(src, dst string, info os.FileInfo) error {
+	if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := copyPath(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+			return err
 		}
 	}
 	return nil

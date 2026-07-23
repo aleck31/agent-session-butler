@@ -207,6 +207,12 @@ type deleteError struct{ msg string }
 
 func (e *deleteError) Error() string { return "hermes delete failed: " + e.msg }
 
+// Relocate is unsupported for Hermes: a session's home is its profile/DB, not a
+// cwd, and moving rows across profile DBs isn't a meaningful operation here.
+func (HermesAgent) Relocate(s Session, newCwd string, asCopy bool) (string, error) {
+	return "", ErrRelocateUnsupported
+}
+
 // activeSessionIDs returns the set of session ids the profile's running gateway
 // currently holds — those are treated as locked. Empty if the gateway isn't
 // live. Session ids live inside gateway_routing.entry_json (a JSON blob), not a

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // KiroAgent: Kiro CLI stores each session as a bundle under
@@ -127,6 +129,51 @@ func (a KiroAgent) parse(sid string, paths []string) (Session, bool) {
 // Delete removes the session's file bundle. Kiro sessions are plain files with
 // no shadow index, so removing them directly is safe.
 func (KiroAgent) Delete(s Session) error { return deleteFiles(s) }
+
+// Relocate re-homes a Kiro session to newCwd. Move rewrites the .json's cwd in
+// place; copy duplicates the whole bundle under a fresh session id first.
+func (KiroAgent) Relocate(s Session, newCwd string, asCopy bool) (string, error) {
+	jsonPath := s.CacheKey // Kiro's CacheKey is the .json path
+	sid := s.ID
+	if asCopy {
+		newSid := uuid.NewString()
+		for _, src := range s.FilePaths {
+			// {oldsid}.ext → {newsid}.ext, preserving each file's extension/suffix.
+			dst := filepath.Join(filepath.Dir(src), newSid+strings.TrimPrefix(filepath.Base(src), sid))
+			if err := copyPath(src, dst); err != nil {
+				return "", err
+			}
+			if filepath.Ext(src) == ".json" {
+				jsonPath = dst
+			}
+		}
+		sid = newSid
+	}
+	if err := kiroSetJSON(jsonPath, sid, newCwd); err != nil {
+		return "", err
+	}
+	return sid, nil
+}
+
+// kiroSetJSON rewrites the session's .json with the given session_id and cwd,
+// preserving all other fields.
+func kiroSetJSON(jsonPath, sid, cwd string) error {
+	data, err := os.ReadFile(jsonPath)
+	if err != nil {
+		return err
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	m["session_id"] = sid
+	m["cwd"] = cwd
+	out, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(jsonPath, out, 0o644)
+}
 
 // Enrich fills only the message count for Kiro (the title is already known from
 // .json at scan time), by streaming the .jsonl event log and tallying Prompt

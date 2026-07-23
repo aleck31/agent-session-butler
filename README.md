@@ -13,8 +13,9 @@ A single static Go binary. Runs on Linux, macOS, and Windows. Provides a termina
 - **Auto-discovery** — finds installed agents and scans their on-disk sessions. Agents are peers; add one by implementing the `Agent` interface.
 - **Grouped by working directory** — every `cwd` you've used an agent in, sorted by most recent activity, with per-directory session count and size.
 - **Orphan detection** — directories that no longer exist (project deleted, sessions linger) are flagged `[missing]` — prime cleanup candidates.
-- **Lazy enrichment** — message count and titles are computed on demand (`list -v`), so a bare listing stays instant even with tens of MB of `.jsonl`.
-- **Lock-aware delete** — sessions held by a **running** agent are lock-detected (live PID check) and protected from deletion.
+- **Lazy enrichment** — message count and titles are computed on demand, so a bare listing stays instant even with tens of MB of `.jsonl`.
+- **Move / copy sessions** — re-home a session to a new working directory when a repo moves (`~/ideas/foo` → `~/repos/foo`), so the agent can resume it at the new path. Move or copy, via CLI or the web UI. (Not supported for Hermes, whose home is its profile.)
+- **Lock-aware** — sessions held by a **running** agent are lock-detected (live PID check) and protected from deletion or relocation.
 
 ### Supported agents
 
@@ -26,7 +27,7 @@ A single static Go binary. Runs on Linux, macOS, and Windows. Provides a termina
 
 Most agents keep sessions as files; **Hermes** stores them as rows in a per-profile SQLite database. The tool opens each `state.db` read-only (respecting the gateway's WAL writes) and never writes to it — deletion goes through `hermes sessions delete`, which also clears the FTS index. Only interactive CLI sessions are shown (`source = cli`); channel, cron, and imported sessions have no meaningful working directory and are skipped, keeping Hermes in the same "sessions you ran in a directory" scope as Kiro and Claude Code. Since a DB-backed session has no file size, its size is the total byte length of its message content. Sessions are grouped by profile as well as cwd — the same directory under different Hermes profiles forms distinct groups, labelled `name <profile>` (the root database is the `default` profile). A Hermes session is lock-protected only when its profile's gateway is running and that session is the one the gateway currently holds.
 
-Agent Session Butler is **read-only except for deletion** — it never modifies session content.
+Agent Session Butler only touches sessions when you ask: it deletes on request, and moves/copies a session's working-directory association on request (rewriting just the cwd, and for a copy a fresh id). It never alters conversation content.
 
 ## Install / build
 
@@ -55,12 +56,13 @@ GOOS=windows GOARCH=amd64 go build -o dist/asbutler.exe       ./cmd/asbutler
 ## Usage
 
 ```bash
-asbutler list                 # every session, grouped by working directory
+asbutler list                 # all sessions as JSON (summary + flat array), for agents
+asbutler list -H              # human-readable, grouped by working directory
 asbutler list -a claude       # only a matching agent (case-insensitive substring)
 asbutler list -o              # only orphaned directories (working dir is gone)
-asbutler list -v              # also enrich: message count + resolved title per session
-asbutler list -a kiro -o -v   # filters and detail all combine
-asbutler rm <id>...           # permanently delete sessions by id (locked ones are refused)
+asbutler rm <id>...           # delete sessions by id; JSON results (-H for text)
+asbutler mv <id> <new-cwd>    # move a session to a new working directory
+asbutler cp <id> <new-cwd>    # copy a session to a new working directory (new id)
 asbutler webui                # open the browser UI (default http://127.0.0.1:7788)
 asbutler webui --addr :8080   # bind a different host:port
 asbutler webui --no-open      # start the server without opening a browser
@@ -68,7 +70,7 @@ asbutler version              # print the version
 asbutler help
 ```
 
-`-a` / `--agent` matches the agent name by case-insensitive substring, so `-a claude` selects "Claude Code" — no need to type the full name. `-o` / `--orphans` keeps only groups whose working directory no longer exists — the prime cleanup candidates. Flags compose, and the summary line reflects the filtered set.
+Output is JSON by default (for agents); `-H`/`--human` gives readable text. `-a` / `--agent` matches the agent name by case-insensitive substring, so `-a claude` selects "Claude Code". `-o` / `--orphans` keeps only groups whose working directory no longer exists. `mv` / `cp` re-home a session so a relocated repo's session resumes at the new path (Hermes excluded).
 
 ### Browser UI (`webui`)
 
@@ -77,7 +79,7 @@ asbutler help
 ## Project layout
 
 ```
-cmd/asbutler/main.go          CLI entry point (list / rm / webui / version)
+cmd/asbutler/main.go          CLI entry point (list / rm / mv / cp / webui / version)
 internal/agent/
   agent.go                    Agent interface, Session, streaming jsonl reader
   kiro.go                     KiroAgent (.json + .jsonl bundle)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -225,6 +226,38 @@ func (s *Store) DeleteByID(id string) error {
 		}
 	}
 	return fmt.Errorf("no session with id %q", id)
+}
+
+// RelocateByID moves (or copies, if asCopy) the session with the given id to
+// newCwd, delegating to the owning agent. Returns the resulting session id.
+// Refuses locked sessions and rejects an empty target cwd.
+func (s *Store) RelocateByID(id, newCwd string, asCopy bool) (string, error) {
+	if strings.TrimSpace(newCwd) == "" {
+		return "", fmt.Errorf("target cwd must not be empty")
+	}
+	for _, g := range s.Scan() {
+		for _, sess := range g.Sessions {
+			if sess.ID != id {
+				continue
+			}
+			if sess.Locked {
+				return "", fmt.Errorf("session is in use by a running process")
+			}
+			a := s.agentNamed(sess.Agent)
+			if a == nil {
+				return "", fmt.Errorf("unknown agent %q", sess.Agent)
+			}
+			newID, err := a.Relocate(sess, newCwd, asCopy)
+			if err != nil {
+				return "", err
+			}
+			s.mu.Lock()
+			delete(s.cache, sess.CacheKey) // moved/copied → old cache entry is stale
+			s.mu.Unlock()
+			return newID, nil
+		}
+	}
+	return "", fmt.Errorf("no session with id %q", id)
 }
 
 // group buckets sessions by cwd; newest session first within a group, and

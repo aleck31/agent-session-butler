@@ -30,7 +30,7 @@ func writeJSON(v any) {
 }
 
 // version is the release version, printed by `asbutler version`.
-const version = "0.5.4"
+const version = "0.6.0"
 
 func main() {
 	args := os.Args[1:]
@@ -45,6 +45,10 @@ func main() {
 		cmdList(args)
 	case "rm", "delete":
 		cmdRm(args)
+	case "mv", "move":
+		cmdRelocate(args, false)
+	case "cp", "copy":
+		cmdRelocate(args, true)
 	case "webui":
 		cmdWebUI(args)
 	case "version", "--version":
@@ -69,6 +73,8 @@ Usage:
   asbutler list -a <agent>      Only sessions from a matching agent (e.g. -a claude)
   asbutler list -o              Only orphaned directories (working dir is gone)
   asbutler rm <id>...           Delete sessions by id; prints JSON results (-H for text)
+  asbutler mv <id> <new-cwd>    Move a session to a new working directory
+  asbutler cp <id> <new-cwd>    Copy a session to a new working directory (new id)
   asbutler webui [--addr host:port] [--no-open]  Open the local browser UI (default 127.0.0.1:7788)
   asbutler version              Print the version
   asbutler help                 Show this help
@@ -262,6 +268,59 @@ func cmdRm(args []string) {
 		writeJSON(results)
 	}
 	if anyFail {
+		os.Exit(1)
+	}
+}
+
+// relocateResult is the JSON output of mv/cp.
+type relocateResult struct {
+	ID     string `json:"id"`     // resulting session id (new id for cp)
+	NewCwd string `json:"newCwd"`
+	Copied bool   `json:"copied"`
+	Error  string `json:"error,omitempty"`
+}
+
+// cmdRelocate handles `mv`/`cp <id> <new-cwd>`; asCopy picks copy vs move.
+func cmdRelocate(args []string, asCopy bool) {
+	name := "mv"
+	if asCopy {
+		name = "cp"
+	}
+	human := false
+	var pos []string
+	for _, a := range args {
+		if a == "-H" || a == "--human" {
+			human = true
+		} else {
+			pos = append(pos, a)
+		}
+	}
+	if len(pos) != 2 {
+		fmt.Fprintf(os.Stderr, "%s: usage: asbutler %s <session-id> <new-cwd>\n", name, name)
+		os.Exit(2)
+	}
+	id, newCwd := pos[0], pos[1]
+
+	s := store.New()
+	newID, err := s.RelocateByID(id, newCwd, asCopy)
+	res := relocateResult{ID: newID, NewCwd: newCwd, Copied: asCopy}
+	if err != nil {
+		res.ID = id
+		res.Error = err.Error()
+	}
+
+	if human {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "✗ %s: %s\n", id, err)
+		} else if asCopy {
+			fmt.Printf("✓ copied %s → %s (new id %s)\n", id, newCwd, newID)
+		} else {
+			fmt.Printf("✓ moved %s → %s\n", id, newCwd)
+		}
+	} else {
+		writeJSON(res)
+	}
+	if err != nil {
 		os.Exit(1)
 	}
 }
