@@ -30,15 +30,15 @@ Agent Session Butler is **read-only except for deletion** — it never modifies 
 
 ## Install / build
 
-Requires Go 1.25+.
-
 ```bash
 ./install.sh
 ```
 
-This builds `asbutler` and installs it to `~/.local/bin` (override with `BIN_DIR=...`). Run it again any time to upgrade. Then use `asbutler webui`, `asbutler list`, etc. from anywhere.
+Installs `asbutler` to `~/.local/bin` (override with `BIN_DIR=...`); rerun any time to upgrade. By default it downloads the matching prebuilt binary from the [latest release](https://github.com/aleck31/agent-session-butler/releases/latest) — no Go needed. Pass `--build` to compile the checked-out source instead (needs Go 1.25+; use this when you've changed the code). Then use `asbutler webui`, `asbutler list`, etc. from anywhere.
 
-Or build in place without installing:
+You can also grab a binary straight from the [releases page](https://github.com/aleck31/agent-session-butler/releases).
+
+Or build in place without installing (needs Go):
 
 ```bash
 go build -o asbutler ./cmd/asbutler
