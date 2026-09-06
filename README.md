@@ -37,6 +37,8 @@ Agent Session Butler only touches sessions when you ask: it deletes on request, 
 
 Installs `asbutler` to `~/.local/bin` (override with `BIN_DIR=...`); rerun any time to upgrade. By default it downloads the matching prebuilt binary from the [latest release](https://github.com/aleck31/agent-session-butler/releases/latest) — no Go needed. Pass `--build` to compile the checked-out source instead (needs Go 1.25+; use this when you've changed the code). Then use `asbutler webui`, `asbutler list`, etc. from anywhere.
 
+The installer prefers the GitHub CLI (`gh release download`) and falls back to an anonymous download, then to telling you to use `--build`. The `gh` path is first because it carries your credentials, which is what makes it work while the repo is private — anonymous release URLs 404 there. Either path works once the repo is public, so nothing needs changing then; `gh auth login` once is enough for now.
+
 You can also grab a binary straight from the [releases page](https://github.com/aleck31/agent-session-butler/releases).
 
 Or build in place without installing (needs Go):
@@ -76,7 +78,22 @@ Output is JSON by default (for agents); `-H`/`--human` gives readable text. `-a`
 
 `list` is scoped to one directory by default because listing is only cheap when it is: the JSON path enriches every session it returns (reading each file to count messages), so a machine-wide `--all` over ~1.5 GiB of history takes ~35s where a single directory takes ~2s. `--path` narrows *before* enrichment. Matching is on the exact directory — a parent does not pick up its children's sessions — and tolerates `~`, relative paths, symlinks (macOS `/tmp` → `/private/tmp`), and case-insensitive filesystems. A directory with no sessions is an empty result, not an error.
 
-Note: before 0.6.1 `list` had no path filter and always returned every session. Pass `--all` for that behaviour.
+Note: before 0.6.1 `list` had no path filter and always returned every session. Pass `--all` for that behaviour. Since 0.6.2 an unrecognised flag is an error rather than being silently ignored — a typo like `--paths ~/foo` used to fall back to the current directory and quietly return the wrong scope.
+
+### Downstream consumers
+
+The `list` JSON is a contract, not just output — at least one tool parses it, and nothing else in this repo points at it, so it's recorded here.
+
+| Consumer | How it calls | Fields it reads |
+|---|---|---|
+| [tabby-agent-sessions](https://github.com/aleck31/tabby-agent-sessions) (private) | `execFile` → `asbutler list --path <cwd>` | `agent`, `cwd`, `title`, `messageCount`, `sizeHuman`, `modifiedAt`, `locked`, `id` |
+
+What that pins down, for anyone changing this code:
+
+- **The `{summary, sessions[]}` shape and those key names.** Renaming or removing one breaks the consumer's sidebar. `internal/view/view_test.go` asserts the exact key set, so such a change fails the test rather than shipping silently — when you do mean it, update the test, bump the version, and tell the consumer.
+- **`--path` must narrow *before* enrichment.** This is the whole point of ADR-0002 D2. Moving the filter after enrichment would take an interactive query from ~1s back to ~36s on a real machine, which is a performance regression the consumer feels directly.
+- **`asbutler list` must keep defaulting to JSON** (since 0.5.4) and `--path` must keep its exact-directory, non-recursive semantics.
+- Minimum version required by the consumer: **0.6.1**.
 
 ### Browser UI (`webui`)
 
@@ -96,12 +113,16 @@ internal/agent/
 internal/store/
   store.go                    concurrent scan, mtime cache, grouping, orphan, delete
   util.go                     path + human-size helpers
+internal/view/
+  view.go                     JSON serialization: Flat (CLI/agents) + Grouped (web UI)
 internal/server/
-  server.go                   HTTP routes + JSON view models over the store
-  web/                         embedded UI (index.html + vendored alpine.min.js)
+  server.go                   HTTP routes over the store
+  web/                        embedded UI (index.html + vendored alpine.min.js)
 ```
 
 Only the process-lock check is platform-specific (build-tag split); everything else is shared.
+
+Tests live beside the code (`go test ./...`). They run against sandboxed `HOME` / `HERMES_HOME` temp dirs and never touch real session data. The invariants they pin are the ones that were established empirically and are easy to break by accident: Claude's lossy project-dir encoding (cwd must come from file contents), the move-rewrites-both-dir-and-in-file-cwd rule, Hermes' cli-only scope and read-only access, the `(profile, cwd)` grouping key, stale-lock detection, the mtime cache, and the agent-facing JSON contract below.
 
 ## License
 
