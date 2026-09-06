@@ -49,24 +49,54 @@ asset_suffix() {
   echo "${os}-${arch}${ext}"
 }
 
-download_release() {
-  local suffix tag url
-  suffix="$(asset_suffix)" || exit 1
+# Download via gh, which carries the user's credentials — the only path that
+# works while the repo is private (anonymous release URLs 404 there).
+download_via_gh() {
+  local suffix="$1" tag
+  command -v gh >/dev/null || return 1
+  gh auth status >/dev/null 2>&1 || return 1
 
-  command -v curl >/dev/null || { echo "error: curl is required to download (or use --build)" >&2; exit 1; }
+  tag="$(gh release view --repo "$REPO" --json tagName --jq .tagName 2>/dev/null)" || return 1
+  [ -n "$tag" ] || return 1
 
-  echo "Downloading the latest prebuilt binary ($suffix)…"
+  echo "Downloading the latest prebuilt binary via gh ($tag, $suffix)…"
+  mkdir -p "$BIN_DIR"
+  gh release download "$tag" --repo "$REPO" \
+    --pattern "asbutler-$tag-$suffix" --output "$BIN" --clobber
+}
+
+# Anonymous download — works once the repo is public.
+download_via_curl() {
+  local suffix="$1" tag url
+  command -v curl >/dev/null || return 1
+
   # Latest release tag via the GitHub API. No awk 'exit' — closing the pipe
   # early makes curl fail under pipefail; read to EOF and keep the first match.
   tag="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-    | awk -F'"' '/"tag_name"/ && !seen {print $4; seen=1}')"
-  [ -n "$tag" ] || { echo "error: could not resolve latest release tag" >&2; exit 1; }
+    | awk -F'"' '/"tag_name"/ && !seen {print $4; seen=1}')" || return 1
+  [ -n "$tag" ] || return 1
 
   url="https://github.com/$REPO/releases/download/$tag/asbutler-$tag-$suffix"
-  mkdir -p "$BIN_DIR"
+  echo "Downloading the latest prebuilt binary ($suffix)…"
   echo "  $url"
-  curl -fSL "$url" -o "$BIN"
-  chmod +x "$BIN"
+  mkdir -p "$BIN_DIR"
+  curl -fSL "$url" -o "$BIN" || return 1
+}
+
+download_release() {
+  local suffix
+  suffix="$(asset_suffix)" || exit 1
+
+  if download_via_gh "$suffix" || download_via_curl "$suffix"; then
+    chmod +x "$BIN"
+    return 0
+  fi
+
+  echo "error: could not download a prebuilt binary for $suffix." >&2
+  echo "  If the release assets need credentials, install the GitHub CLI and run" >&2
+  echo "  'gh auth login'. Otherwise build from source:" >&2
+  echo "    ./install.sh --build" >&2
+  exit 1
 }
 
 # Default to the prebuilt binary (fast, no toolchain). --build compiles the
