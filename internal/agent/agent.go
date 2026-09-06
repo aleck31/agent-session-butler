@@ -53,7 +53,7 @@ type Agent interface {
 	// Hermes shells out to its CLI (never touches the DB directly). Refusing a
 	// locked session is the store's job, not the agent's.
 	Delete(s Session) error
-	// Relocate re-homes the session to newCwd. When asCopy is false (move) the session's cwd association changes in place; 
+	// Relocate re-homes the session to newCwd. When asCopy is false (move) the session's cwd association changes in place;
 	// when true (copy) the original is kept and a fresh copy is created under a new id. Returns the resulting session's id.
 	// Agents that can't relocate (Hermes) return ErrRelocateUnsupported.
 	Relocate(s Session, newCwd string, asCopy bool) (newID string, err error)

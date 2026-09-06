@@ -110,8 +110,8 @@ func (a HermesAgent) scanDB(db dbEntry) []Session {
 	}
 	defer conn.Close()
 
-	active := activeSessionIDs(conn, db)  // ids the running gateway holds → locked
-	bytesByID := contentBytes(conn)       // session_id → total message content bytes
+	active := activeSessionIDs(conn, db) // ids the running gateway holds → locked
+	bytesByID := contentBytes(conn)      // session_id → total message content bytes
 
 	// Only interactive CLI sessions — same scope as Kiro/Claude Code. Channel/
 	// cron/imported sessions have no meaningful cwd and would flood the listing.
@@ -150,11 +150,11 @@ func (a HermesAgent) scanDB(db dbEntry) []Session {
 			MessageCount: &mc, // sessions.message_count is authoritative; no Enrich needed
 			// DB-backed: no file size. Use total message-content bytes (near-
 			// complete coverage, unlike the sparse token columns); 0 if none.
-			FileSize:     bytesByID[id],
-			ModifiedAt:   unixToTime(ts),
-			Locked:       active[id],
-			CacheKey:     db.path + "#" + id,
-			Extra:        map[string]string{"profile": db.profile},
+			FileSize:   bytesByID[id],
+			ModifiedAt: unixToTime(ts),
+			Locked:     active[id],
+			CacheKey:   db.path + "#" + id,
+			Extra:      map[string]string{"profile": db.profile},
 		})
 	}
 	return out
