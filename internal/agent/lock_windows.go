@@ -9,6 +9,9 @@ import "golang.org/x/sys/windows"
 // means not alive. A crashed agent leaves a stale lock, so we verify the PID
 // rather than trusting mere file existence.
 func pidAlive(pid int) bool {
+	if pid <= 0 { // never a real process; keeps parity with the unix guard
+		return false
+	}
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
 		return false
