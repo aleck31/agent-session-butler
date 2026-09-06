@@ -31,7 +31,7 @@ func writeJSON(v any) {
 }
 
 // version is the release version, printed by `asbutler version`.
-const version = "0.6.1"
+const version = "0.6.2"
 
 func main() {
 	args := os.Args[1:]
@@ -85,63 +85,80 @@ Usage:
 `)
 }
 
-func cmdList(args []string) {
-	human := false
-	orphansOnly := false
+// listOptions is the resolved form of `list`'s flags — the scope rules from
+// ADR-0002 D2 are already applied, so pathFilter == "" means machine-wide.
+type listOptions struct {
+	human       bool
+	orphansOnly bool
+	agentFilter string
+	pathFilter  string
+}
+
+// parseListArgs resolves `list`'s flags, applying the scope rules: --all and
+// --path conflict, -o implies --all (orphans have no reachable directory to
+// scope to), and the default scope is the current directory.
+func parseListArgs(args []string) (listOptions, error) {
+	var o listOptions
 	all := false
-	agentFilter := ""
-	pathFilter := ""
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "-H" || a == "--human":
-			human = true
+			o.human = true
 		case a == "-o" || a == "--orphans":
-			orphansOnly = true
+			o.orphansOnly = true
 		case a == "--all":
 			all = true
 		case a == "-p" || a == "--path":
 			// value is the next arg
-			if i+1 < len(args) {
-				pathFilter = args[i+1]
-				i++
-			} else {
-				fmt.Fprintln(os.Stderr, "list: --path needs a value (e.g. --path ~/repos/foo)")
-				os.Exit(2)
+			if i+1 >= len(args) {
+				return o, fmt.Errorf("--path needs a value (e.g. --path ~/repos/foo)")
 			}
+			o.pathFilter = args[i+1]
+			i++
 		case strings.HasPrefix(a, "--path="):
-			pathFilter = strings.TrimPrefix(a, "--path=")
+			o.pathFilter = strings.TrimPrefix(a, "--path=")
 		case strings.HasPrefix(a, "-p="):
-			pathFilter = strings.TrimPrefix(a, "-p=")
+			o.pathFilter = strings.TrimPrefix(a, "-p=")
 		case a == "-a" || a == "--agent":
 			// value is the next arg
-			if i+1 < len(args) {
-				agentFilter = args[i+1]
-				i++
-			} else {
-				fmt.Fprintln(os.Stderr, "list: --agent needs a value (e.g. -a claude)")
-				os.Exit(2)
+			if i+1 >= len(args) {
+				return o, fmt.Errorf("--agent needs a value (e.g. -a claude)")
 			}
+			o.agentFilter = args[i+1]
+			i++
 		case strings.HasPrefix(a, "--agent="):
-			agentFilter = strings.TrimPrefix(a, "--agent=")
+			o.agentFilter = strings.TrimPrefix(a, "--agent=")
 		case strings.HasPrefix(a, "-a="):
-			agentFilter = strings.TrimPrefix(a, "-a=")
+			o.agentFilter = strings.TrimPrefix(a, "-a=")
+		default:
+			return o, fmt.Errorf("unknown flag %q", a)
 		}
 	}
 
-	if all && pathFilter != "" {
-		fmt.Fprintln(os.Stderr, "list: --all and --path are mutually exclusive")
-		os.Exit(2)
+	if all && o.pathFilter != "" {
+		return o, fmt.Errorf("--all and --path are mutually exclusive")
 	}
 	// Orphan groups have no reachable directory to scope to, so they only make
 	// sense machine-wide.
-	if orphansOnly {
+	if o.orphansOnly {
 		all = true
 	}
 	// Default is the current directory; --all opts back into the whole machine.
-	if !all && pathFilter == "" {
-		pathFilter = "."
+	if !all && o.pathFilter == "" {
+		o.pathFilter = "."
 	}
+	return o, nil
+}
+
+func cmdList(args []string) {
+	opts, err := parseListArgs(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "list: %v\n", err)
+		os.Exit(2)
+	}
+	human, orphansOnly := opts.human, opts.orphansOnly
+	agentFilter, pathFilter := opts.agentFilter, opts.pathFilter
 
 	s := store.New()
 	installed := s.InstalledAgents()
@@ -366,7 +383,7 @@ func cmdRm(args []string) {
 
 // relocateResult is the JSON output of mv/cp.
 type relocateResult struct {
-	ID     string `json:"id"`     // resulting session id (new id for cp)
+	ID     string `json:"id"` // resulting session id (new id for cp)
 	NewCwd string `json:"newCwd"`
 	Copied bool   `json:"copied"`
 	Error  string `json:"error,omitempty"`

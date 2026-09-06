@@ -1,0 +1,486 @@
+package store
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/aleck/agent-session-butler/internal/agent"
+)
+
+// fakeAgent is a scriptable in-memory Agent, so store behaviour (cache,
+// grouping, delegation) can be tested without touching any real agent's files.
+type fakeAgent struct {
+	name      string
+	sessions  []agent.Session
+	enriched  int // how many times Enrich was called
+	deleted   []string
+	relocated []string
+	deleteErr error
+	relocErr  error
+}
+
+func (f *fakeAgent) Name() string    { return f.name }
+func (f *fakeAgent) Installed() bool { return true }
+func (f *fakeAgent) Scan() []agent.Session {
+	out := make([]agent.Session, len(f.sessions))
+	copy(out, f.sessions)
+	return out
+}
+
+func (f *fakeAgent) Enrich(s agent.Session) agent.Session {
+	f.enriched++
+	n := 42
+	s.MessageCount = &n
+	s.Title = "enriched-" + s.ID
+	return s
+}
+
+func (f *fakeAgent) Delete(s agent.Session) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, s.ID)
+	return nil
+}
+
+func (f *fakeAgent) Relocate(s agent.Session, newCwd string, asCopy bool) (string, error) {
+	if f.relocErr != nil {
+		return "", f.relocErr
+	}
+	f.relocated = append(f.relocated, s.ID+"→"+newCwd)
+	if asCopy {
+		return s.ID + "-copy", nil
+	}
+	return s.ID, nil
+}
+
+// uninstalledAgent must never be scanned.
+type uninstalledAgent struct{ fakeAgent }
+
+func (*uninstalledAgent) Installed() bool { return false }
+
+func newTestStore(agents ...agent.Agent) *Store {
+	return &Store{agents: agents, cache: map[string]cacheEntry{}}
+}
+
+func at(sec int64) time.Time { return time.Unix(sec, 0) }
+
+func sess(id, agentName, cwd string, modified int64, opts ...func(*agent.Session)) agent.Session {
+	s := agent.Session{
+		ID: id, Agent: agentName, Cwd: cwd, Title: id,
+		FileSize: 100, ModifiedAt: at(modified), CacheKey: agentName + ":" + id,
+	}
+	for _, o := range opts {
+		o(&s)
+	}
+	return s
+}
+
+func withProfile(p string) func(*agent.Session) {
+	return func(s *agent.Session) {
+		if s.Extra == nil {
+			s.Extra = map[string]string{}
+		}
+		s.Extra["profile"] = p
+	}
+}
+
+func locked() func(*agent.Session) { return func(s *agent.Session) { s.Locked = true } }
+
+func withSize(n int64) func(*agent.Session) { return func(s *agent.Session) { s.FileSize = n } }
+
+// ADR-0001 D5: grouping is keyed on (profile, cwd), so the same directory under
+// two Hermes profiles forms two distinct groups — while profile-less agents
+// degrade to plain cwd grouping.
+func TestGroupKeysOnProfileAndCwd(t *testing.T) {
+	got := group([]agent.Session{
+		sess("h1", "Hermes", "/shared", 10, withProfile("x-tec")),
+		sess("h2", "Hermes", "/shared", 20, withProfile("x-main")),
+		sess("k1", "Kiro", "/shared", 30),
+		sess("k2", "Kiro", "/shared", 40),
+	})
+
+	if len(got) != 3 {
+		t.Fatalf("groups: got %d, want 3 (two Hermes profiles + one profile-less)", len(got))
+	}
+	counts := map[string]int{}
+	for _, g := range got {
+		counts[g.Profile] = len(g.Sessions)
+	}
+	if counts["x-tec"] != 1 || counts["x-main"] != 1 || counts[""] != 2 {
+		t.Errorf("group sizes by profile: got %v", counts)
+	}
+}
+
+// Sessions are newest-first inside a group, and groups are ordered by their most
+// recent activity.
+func TestGroupOrdersNewestFirst(t *testing.T) {
+	got := group([]agent.Session{
+		sess("old", "Kiro", "/a", 100),
+		sess("new", "Kiro", "/a", 300),
+		sess("mid", "Kiro", "/a", 200),
+		sess("other", "Kiro", "/b", 250),
+	})
+
+	if len(got) != 2 {
+		t.Fatalf("groups: got %d, want 2", len(got))
+	}
+	// /a's latest is 300, /b's is 250 → /a first.
+	if got[0].Cwd != "/a" || got[1].Cwd != "/b" {
+		t.Errorf("group order: got %s,%s — want /a,/b", got[0].Cwd, got[1].Cwd)
+	}
+	want := []string{"new", "mid", "old"}
+	for i, id := range want {
+		if got[0].Sessions[i].ID != id {
+			t.Errorf("session %d: got %q, want %q", i, got[0].Sessions[i].ID, id)
+		}
+	}
+}
+
+func TestGroupOfNothingIsEmpty(t *testing.T) {
+	if got := group(nil); len(got) != 0 {
+		t.Errorf("got %d groups, want 0", len(got))
+	}
+}
+
+func TestGroupTotalSizeAndLatestModified(t *testing.T) {
+	g := Group{Sessions: []agent.Session{
+		sess("a", "Kiro", "/x", 100, withSize(10)),
+		sess("b", "Kiro", "/x", 300, withSize(25)),
+	}}
+	if got := g.TotalSize(); got != 35 {
+		t.Errorf("totalSize: got %d, want 35", got)
+	}
+	if got := g.LatestModified(); !got.Equal(at(300)) {
+		t.Errorf("latestModified: got %v, want %v", got, at(300))
+	}
+	if got := (Group{}).LatestModified(); !got.IsZero() {
+		t.Errorf("empty group latestModified: got %v, want the zero time", got)
+	}
+}
+
+func TestGroupDisplayName(t *testing.T) {
+	for name, tc := range map[string]struct {
+		g    Group
+		want string
+	}{
+		"plain":           {Group{Cwd: "/home/u/proj"}, "proj"},
+		"with profile":    {Group{Cwd: "/home/u/proj", Profile: "x-tec"}, "proj <x-tec>"},
+		"trailing slash":  {Group{Cwd: "/home/u/proj/"}, "proj"},
+		"windows sep":     {Group{Cwd: `C:\Users\u\proj`}, "proj"},
+		"unknown":         {Group{Cwd: "(unknown)"}, "(unknown)"},
+		"unknown+profile": {Group{Cwd: "(unknown)", Profile: "default"}, "(unknown) <default>"},
+		"root falls back": {Group{Cwd: "/"}, "/"},
+		"no separator":    {Group{Cwd: "relative"}, "relative"},
+	} {
+		if got := tc.g.DisplayName(); got != tc.want {
+			t.Errorf("%s: DisplayName = %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+// ADR-0001 D8: orphan is one uniform rule — does the group's cwd still exist?
+func TestCwdExists(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "afile")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, tc := range map[string]struct {
+		cwd  string
+		want bool
+	}{
+		"existing dir": {dir, true},
+		"gone dir":     {filepath.Join(dir, "nope"), false},
+		"a file":       {file, false},
+		"unknown":      {"(unknown)", false},
+		"empty":        {"", false},
+	} {
+		if got := (Group{Cwd: tc.cwd}).CwdExists(); got != tc.want {
+			t.Errorf("%s: CwdExists(%q) = %v, want %v", name, tc.cwd, got, tc.want)
+		}
+	}
+}
+
+func TestInstalledAgentsSkipsUninstalled(t *testing.T) {
+	s := newTestStore(&fakeAgent{name: "Kiro"}, &uninstalledAgent{fakeAgent{name: "Hermes"}})
+	got := s.InstalledAgents()
+	if len(got) != 1 || got[0] != "Kiro" {
+		t.Errorf("got %v, want [Kiro]", got)
+	}
+}
+
+func TestScanSkipsUninstalledAgents(t *testing.T) {
+	off := &uninstalledAgent{fakeAgent{name: "Hermes", sessions: []agent.Session{sess("h", "Hermes", "/x", 1)}}}
+	s := newTestStore(&fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k", "Kiro", "/x", 1)}}, off)
+
+	groups := s.Scan()
+	if len(groups) != 1 || len(groups[0].Sessions) != 1 || groups[0].Sessions[0].ID != "k" {
+		t.Errorf("scan included an uninstalled agent: %+v", groups)
+	}
+}
+
+// An unchanged session (same mtime) keeps its cached enrichment across scans —
+// the whole point of the mtime cache.
+func TestEnrichmentIsCachedAcrossScansWhileMtimeHolds(t *testing.T) {
+	f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/x", 1000)}}
+	s := newTestStore(f)
+
+	g := s.EnrichGroup(s.Scan()[0])
+	if f.enriched != 1 {
+		t.Fatalf("first enrich: agent called %d times, want 1", f.enriched)
+	}
+	if g.Sessions[0].MessageCount == nil || *g.Sessions[0].MessageCount != 42 {
+		t.Fatalf("messageCount: got %v, want 42", g.Sessions[0].MessageCount)
+	}
+
+	// A fresh scan must serve the cached enrichment, not re-read the file.
+	rescanned := s.Scan()[0]
+	if rescanned.Sessions[0].MessageCount == nil {
+		t.Error("rescan lost the cached message count")
+	}
+	s.EnrichGroup(rescanned)
+	if f.enriched != 1 {
+		t.Errorf("agent Enrich called %d times, want 1 (cache should have served it)", f.enriched)
+	}
+}
+
+// A changed mtime invalidates the cache — a session that grew must be recounted.
+func TestChangedMtimeInvalidatesTheCache(t *testing.T) {
+	f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/x", 1000)}}
+	s := newTestStore(f)
+	s.EnrichGroup(s.Scan()[0])
+
+	f.sessions[0].ModifiedAt = at(2000) // the file changed on disk
+	g := s.Scan()[0]
+	if g.Sessions[0].MessageCount != nil {
+		t.Error("stale cache entry survived an mtime change")
+	}
+	s.EnrichGroup(g)
+	if f.enriched != 2 {
+		t.Errorf("agent Enrich called %d times, want 2 (re-enriched after change)", f.enriched)
+	}
+}
+
+// Scan prunes cache entries for sessions that no longer exist, so the cache
+// can't grow without bound as sessions are deleted outside this process.
+func TestScanPrunesCacheEntriesForGoneSessions(t *testing.T) {
+	f := &fakeAgent{name: "Kiro", sessions: []agent.Session{
+		sess("k1", "Kiro", "/x", 1000),
+		sess("k2", "Kiro", "/x", 1000),
+	}}
+	s := newTestStore(f)
+	s.EnrichGroup(s.Scan()[0])
+	if len(s.cache) != 2 {
+		t.Fatalf("cache size: got %d, want 2", len(s.cache))
+	}
+
+	f.sessions = f.sessions[:1] // k2 disappeared
+	s.Scan()
+	if len(s.cache) != 1 {
+		t.Errorf("cache size after prune: got %d, want 1", len(s.cache))
+	}
+	if _, ok := s.cache["Kiro:k2"]; ok {
+		t.Error("cache still holds the vanished session")
+	}
+}
+
+// EnrichGroup must not redo work for sessions that already carry a count.
+func TestEnrichGroupSkipsAlreadyCountedSessions(t *testing.T) {
+	n := 7
+	pre := sess("k1", "Kiro", "/x", 1000)
+	pre.MessageCount = &n
+	f := &fakeAgent{name: "Kiro", sessions: []agent.Session{pre}}
+	s := newTestStore(f)
+
+	g := s.EnrichGroup(s.Scan()[0])
+	if f.enriched != 0 {
+		t.Errorf("agent Enrich called %d times, want 0", f.enriched)
+	}
+	if *g.Sessions[0].MessageCount != 7 {
+		t.Errorf("messageCount: got %d, want the pre-existing 7", *g.Sessions[0].MessageCount)
+	}
+}
+
+// A session from an agent that isn't in the registry is left alone rather than
+// crashing the enrich pass.
+func TestEnrichGroupTolreatesUnknownAgent(t *testing.T) {
+	s := newTestStore(&fakeAgent{name: "Kiro"})
+	g := Group{Cwd: "/x", Sessions: []agent.Session{sess("g1", "Ghost", "/x", 1)}}
+	got := s.EnrichGroup(g)
+	if got.Sessions[0].MessageCount != nil {
+		t.Error("expected the unknown agent's session to be left unenriched")
+	}
+}
+
+// A live agent owns its locked sessions — deletion must be refused before any
+// agent is asked to act.
+func TestDeleteRefusesLockedSessions(t *testing.T) {
+	f := &fakeAgent{name: "Kiro"}
+	s := newTestStore(f)
+
+	err := s.Delete(sess("k1", "Kiro", "/x", 1, locked()))
+	if err == nil {
+		t.Fatal("expected an error deleting a locked session")
+	}
+	if len(f.deleted) != 0 {
+		t.Errorf("the agent was asked to delete a locked session: %v", f.deleted)
+	}
+}
+
+// ADR-0001 D7: deletion is delegated to the owning agent, and the session's
+// cache entry goes with it.
+func TestDeleteDelegatesAndDropsTheCacheEntry(t *testing.T) {
+	f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/x", 1000)}}
+	s := newTestStore(f)
+	s.EnrichGroup(s.Scan()[0])
+
+	if err := s.Delete(f.sessions[0]); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if len(f.deleted) != 1 || f.deleted[0] != "k1" {
+		t.Errorf("agent Delete calls: got %v, want [k1]", f.deleted)
+	}
+	if _, ok := s.cache["Kiro:k1"]; ok {
+		t.Error("cache entry survived the delete")
+	}
+}
+
+// An agent's delete failure surfaces, and must not silently drop the cache entry
+// as though the delete had worked.
+func TestDeletePropagatesAgentError(t *testing.T) {
+	boom := errors.New("hermes delete failed")
+	f := &fakeAgent{name: "Hermes", sessions: []agent.Session{sess("h1", "Hermes", "/x", 1000)}, deleteErr: boom}
+	s := newTestStore(f)
+	s.EnrichGroup(s.Scan()[0])
+
+	if err := s.Delete(f.sessions[0]); !errors.Is(err, boom) {
+		t.Errorf("got %v, want the agent's error", err)
+	}
+	if _, ok := s.cache["Hermes:h1"]; !ok {
+		t.Error("a failed delete dropped the cache entry")
+	}
+}
+
+func TestDeleteUnknownAgentErrors(t *testing.T) {
+	s := newTestStore(&fakeAgent{name: "Kiro"})
+	if err := s.Delete(sess("g", "Ghost", "/x", 1)); err == nil {
+		t.Error("expected an error for a session from an unregistered agent")
+	}
+}
+
+func TestDeleteByID(t *testing.T) {
+	f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/x", 1)}}
+	s := newTestStore(f)
+
+	if err := s.DeleteByID("k1"); err != nil {
+		t.Fatalf("delete k1: %v", err)
+	}
+	if len(f.deleted) != 1 {
+		t.Errorf("agent Delete calls: got %v", f.deleted)
+	}
+	if err := s.DeleteByID("nope"); err == nil {
+		t.Error("expected an error for an unknown id")
+	}
+}
+
+func TestRelocateByID(t *testing.T) {
+	t.Run("move keeps the id", func(t *testing.T) {
+		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/old", 1000)}}
+		s := newTestStore(f)
+		s.EnrichGroup(s.Scan()[0])
+
+		got, err := s.RelocateByID("k1", "/new", false)
+		if err != nil {
+			t.Fatalf("relocate: %v", err)
+		}
+		if got != "k1" {
+			t.Errorf("id: got %q, want k1", got)
+		}
+		if len(f.relocated) != 1 || f.relocated[0] != "k1→/new" {
+			t.Errorf("agent Relocate calls: got %v", f.relocated)
+		}
+		// The old cache entry is stale once the session has moved.
+		if _, ok := s.cache["Kiro:k1"]; ok {
+			t.Error("stale cache entry survived the relocate")
+		}
+	})
+
+	t.Run("copy gets a new id", func(t *testing.T) {
+		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/old", 1)}}
+		s := newTestStore(f)
+		got, err := s.RelocateByID("k1", "/new", true)
+		if err != nil {
+			t.Fatalf("relocate: %v", err)
+		}
+		if got != "k1-copy" {
+			t.Errorf("id: got %q, want k1-copy", got)
+		}
+	})
+
+	t.Run("empty target cwd is rejected before any scan", func(t *testing.T) {
+		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/old", 1)}}
+		s := newTestStore(f)
+		for _, cwd := range []string{"", "   ", "\t"} {
+			if _, err := s.RelocateByID("k1", cwd, false); err == nil {
+				t.Errorf("cwd %q: expected an error", cwd)
+			}
+		}
+		if len(f.relocated) != 0 {
+			t.Errorf("the agent was called with an empty cwd: %v", f.relocated)
+		}
+	})
+
+	t.Run("locked sessions are refused", func(t *testing.T) {
+		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/old", 1, locked())}}
+		s := newTestStore(f)
+		if _, err := s.RelocateByID("k1", "/new", false); err == nil {
+			t.Error("expected an error relocating a locked session")
+		}
+		if len(f.relocated) != 0 {
+			t.Errorf("the agent was asked to relocate a locked session: %v", f.relocated)
+		}
+	})
+
+	t.Run("unsupported agent error surfaces", func(t *testing.T) {
+		f := &fakeAgent{
+			name:     "Hermes",
+			sessions: []agent.Session{sess("h1", "Hermes", "/old", 1)},
+			relocErr: agent.ErrRelocateUnsupported,
+		}
+		s := newTestStore(f)
+		if _, err := s.RelocateByID("h1", "/new", false); !errors.Is(err, agent.ErrRelocateUnsupported) {
+			t.Errorf("got %v, want ErrRelocateUnsupported", err)
+		}
+	})
+
+	t.Run("unknown id errors", func(t *testing.T) {
+		s := newTestStore(&fakeAgent{name: "Kiro"})
+		if _, err := s.RelocateByID("nope", "/new", false); err == nil {
+			t.Error("expected an error for an unknown id")
+		}
+	})
+}
+
+// The default registry must carry every supported agent, since discovery is what
+// makes the tool useful out of the box.
+func TestNewRegistersEveryAgent(t *testing.T) {
+	s := New()
+	want := map[string]bool{"Kiro": true, "Claude Code": true, "Hermes": true}
+	if len(s.agents) != len(want) {
+		t.Fatalf("registry size: got %d, want %d", len(s.agents), len(want))
+	}
+	for _, a := range s.agents {
+		if !want[a.Name()] {
+			t.Errorf("unexpected agent %q in the default registry", a.Name())
+		}
+		delete(want, a.Name())
+	}
+	if len(want) != 0 {
+		t.Errorf("missing from the default registry: %v", want)
+	}
+}
