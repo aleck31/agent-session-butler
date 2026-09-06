@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"text/tabwriter"
@@ -30,7 +31,7 @@ func writeJSON(v any) {
 }
 
 // version is the release version, printed by `asbutler version`.
-const version = "0.6.0"
+const version = "0.6.1"
 
 func main() {
 	args := os.Args[1:]
@@ -68,10 +69,12 @@ func usage(w *os.File) {
 Output is JSON by default (for agents); add -H/--human for readable text.
 
 Usage:
-  asbutler list                 List all sessions as JSON (summary + flat array)
+  asbutler list                 Sessions for the current working directory (= --path .)
+  asbutler list --path <path>   Sessions for that directory only (no recursion into subdirs)
+  asbutler list --all           Every session on this machine
   asbutler list -H              Human-readable listing, grouped by directory
   asbutler list -a <agent>      Only sessions from a matching agent (e.g. -a claude)
-  asbutler list -o              Only orphaned directories (working dir is gone)
+  asbutler list -o              Only orphaned directories (implies --all)
   asbutler rm <id>...           Delete sessions by id; prints JSON results (-H for text)
   asbutler mv <id> <new-cwd>    Move a session to a new working directory
   asbutler cp <id> <new-cwd>    Copy a session to a new working directory (new id)
@@ -85,7 +88,9 @@ Usage:
 func cmdList(args []string) {
 	human := false
 	orphansOnly := false
+	all := false
 	agentFilter := ""
+	pathFilter := ""
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -93,6 +98,21 @@ func cmdList(args []string) {
 			human = true
 		case a == "-o" || a == "--orphans":
 			orphansOnly = true
+		case a == "--all":
+			all = true
+		case a == "-p" || a == "--path":
+			// value is the next arg
+			if i+1 < len(args) {
+				pathFilter = args[i+1]
+				i++
+			} else {
+				fmt.Fprintln(os.Stderr, "list: --path needs a value (e.g. --path ~/repos/foo)")
+				os.Exit(2)
+			}
+		case strings.HasPrefix(a, "--path="):
+			pathFilter = strings.TrimPrefix(a, "--path=")
+		case strings.HasPrefix(a, "-p="):
+			pathFilter = strings.TrimPrefix(a, "-p=")
 		case a == "-a" || a == "--agent":
 			// value is the next arg
 			if i+1 < len(args) {
@@ -109,9 +129,40 @@ func cmdList(args []string) {
 		}
 	}
 
+	if all && pathFilter != "" {
+		fmt.Fprintln(os.Stderr, "list: --all and --path are mutually exclusive")
+		os.Exit(2)
+	}
+	// Orphan groups have no reachable directory to scope to, so they only make
+	// sense machine-wide.
+	if orphansOnly {
+		all = true
+	}
+	// Default is the current directory; --all opts back into the whole machine.
+	if !all && pathFilter == "" {
+		pathFilter = "."
+	}
+
 	s := store.New()
 	installed := s.InstalledAgents()
 	groups := s.Scan()
+
+	// Narrow before enriching: enrichment reads every session file to count
+	// messages, so scoping first is the difference between seconds and minutes.
+	if pathFilter != "" {
+		want, err := resolvePath(pathFilter)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "list: %s: %v\n", pathFilter, err)
+			os.Exit(2)
+		}
+		filtered := groups[:0]
+		for _, g := range groups {
+			if samePath(g.Cwd, want) {
+				filtered = append(filtered, g)
+			}
+		}
+		groups = filtered
+	}
 
 	// Filter each group's sessions by agent name (case-insensitive substring,
 	// so `-a claude` matches "Claude Code"); drop groups left empty.
@@ -155,6 +206,47 @@ func cmdList(args []string) {
 		groups[i] = s.EnrichGroup(groups[i])
 	}
 	writeJSON(view.Flat(installed, groups, version))
+}
+
+// resolvePath turns a user-supplied path into the absolute, symlink-resolved
+// form that groups are keyed by. Resolution is best-effort: a path that no
+// longer exists still resolves to its absolute form so orphans stay queryable.
+func resolvePath(p string) (string, error) {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		p = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved, nil
+	}
+	return abs, nil
+}
+
+// samePath reports whether a group's cwd is the directory the user asked for,
+// tolerating symlinks (macOS /tmp) and case-insensitive filesystems.
+func samePath(groupCwd, want string) bool {
+	if pathEqual(filepath.Clean(groupCwd), want) {
+		return true
+	}
+	// The agent may have recorded an unresolved path (/tmp/x vs /private/tmp/x).
+	if resolved, err := filepath.EvalSymlinks(groupCwd); err == nil {
+		return pathEqual(resolved, want)
+	}
+	return false
+}
+
+func pathEqual(a, b string) bool {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 // listHuman renders the friendly grouped text output (asbutler list --human).

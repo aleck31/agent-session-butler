@@ -56,10 +56,12 @@ GOOS=windows GOARCH=amd64 go build -o dist/asbutler.exe       ./cmd/asbutler
 ## Usage
 
 ```bash
-asbutler list                 # all sessions as JSON (summary + flat array), for agents
+asbutler list                 # sessions for the current directory, as JSON (= --path .)
+asbutler list --path ~/foo    # sessions for that directory only (no recursion into subdirs)
+asbutler list --all           # every session on this machine
 asbutler list -H              # human-readable, grouped by working directory
 asbutler list -a claude       # only a matching agent (case-insensitive substring)
-asbutler list -o              # only orphaned directories (working dir is gone)
+asbutler list -o              # only orphaned directories (implies --all)
 asbutler rm <id>...           # delete sessions by id; JSON results (-H for text)
 asbutler mv <id> <new-cwd>    # move a session to a new working directory
 asbutler cp <id> <new-cwd>    # copy a session to a new working directory (new id)
@@ -71,6 +73,10 @@ asbutler help
 ```
 
 Output is JSON by default (for agents); `-H`/`--human` gives readable text. `-a` / `--agent` matches the agent name by case-insensitive substring, so `-a claude` selects "Claude Code". `-o` / `--orphans` keeps only groups whose working directory no longer exists. `mv` / `cp` re-home a session so a relocated repo's session resumes at the new path (Hermes excluded).
+
+`list` is scoped to one directory by default because listing is only cheap when it is: the JSON path enriches every session it returns (reading each file to count messages), so a machine-wide `--all` over ~1.5 GiB of history takes ~35s where a single directory takes ~2s. `--path` narrows *before* enrichment. Matching is on the exact directory — a parent does not pick up its children's sessions — and tolerates `~`, relative paths, symlinks (macOS `/tmp` → `/private/tmp`), and case-insensitive filesystems. A directory with no sessions is an empty result, not an error.
+
+Note: before 0.6.1 `list` had no path filter and always returned every session. Pass `--all` for that behaviour.
 
 ### Browser UI (`webui`)
 
