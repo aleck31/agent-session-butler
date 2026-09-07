@@ -8,7 +8,6 @@ package view
 import (
 	"time"
 
-	"github.com/aleck/agent-session-butler/internal/agent"
 	"github.com/aleck/agent-session-butler/internal/store"
 )
 
@@ -74,42 +73,9 @@ type FlatResult struct {
 	Sessions []Session `json:"sessions"`
 }
 
-// duplicateTitles reports which titles appear more than once in a group. Titles
-// come from the first prompt, so resuming the same task repeatedly yields
-// several sessions that are indistinguishable by title alone — four in one
-// directory on the dev machine, differing only in message count.
-func duplicateTitles(sessions []agent.Session) map[string]bool {
-	seen := make(map[string]int, len(sessions))
-	for _, s := range sessions {
-		seen[s.Title]++
-	}
-	dup := map[string]bool{}
-	for title, n := range seen {
-		if n > 1 && title != "" {
-			dup[title] = true
-		}
-	}
-	return dup
-}
-
-// disambiguate suffixes a colliding title with a short id, the way a file
-// manager distinguishes same-named files. Only titles that actually collide
-// within the group are touched, so a unique title is passed through untouched.
-func disambiguate(title, id string, dup map[string]bool) string {
-	if !dup[title] {
-		return title
-	}
-	suffix := id
-	if len(suffix) > 6 {
-		suffix = suffix[len(suffix)-6:] // tail: ids often share a leading prefix
-	}
-	return title + " · " + suffix
-}
-
 // sessionsOf builds self-contained session views for a group.
 func sessionsOf(g store.Group) []Session {
 	orphan := !g.CwdExists()
-	dup := duplicateTitles(g.Sessions)
 	out := make([]Session, 0, len(g.Sessions))
 	for _, s := range g.Sessions {
 		out = append(out, Session{
@@ -118,7 +84,7 @@ func sessionsOf(g store.Group) []Session {
 			Cwd:          g.Cwd,
 			Profile:      g.Profile,
 			Orphan:       orphan,
-			Title:        disambiguate(s.Title, s.ID, dup),
+			Title:        s.Title,
 			MessageCount: s.MessageCount,
 			FileSize:     s.FileSize,
 			SizeHuman:    store.HumanSize(s.FileSize),

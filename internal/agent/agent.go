@@ -56,12 +56,21 @@ type Agent interface {
 	Delete(s Session) error
 	// Relocate re-homes the session to newCwd. When asCopy is false (move) the session's cwd association changes in place;
 	// when true (copy) the original is kept and a fresh copy is created under a new id. Returns the resulting session's id.
-	// Agents that can't relocate (Hermes) return ErrRelocateUnsupported.
+	// Agents that can't relocate (Hermes, Codex) return ErrRelocateUnsupported.
 	Relocate(s Session, newCwd string, asCopy bool) (newID string, err error)
+	// Rename sets the session's title in the agent's own metadata, so the new
+	// title is what that agent shows too. Each backend stores a title somewhere
+	// different and every one of them has an owner-blessed way to change it, so
+	// none of these write around the agent. Refusing a locked session is the
+	// store's job. Agents that can't rename return ErrRenameUnsupported.
+	Rename(s Session, title string) error
 }
 
 // ErrRelocateUnsupported is returned by agents that don't support relocating.
 var ErrRelocateUnsupported = errors.New("this agent does not support moving/copying sessions")
+
+// ErrRenameUnsupported is returned by agents that don't support renaming.
+var ErrRenameUnsupported = errors.New("this agent does not support renaming sessions")
 
 // deleteFiles removes every file in a file-backed session's bundle. Shared by
 // the file agents (Kiro, Claude Code); Hermes overrides Delete entirely.
