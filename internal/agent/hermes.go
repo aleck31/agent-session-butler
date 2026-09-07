@@ -207,6 +207,40 @@ type deleteError struct{ msg string }
 
 func (e *deleteError) Error() string { return "hermes delete failed: " + e.msg }
 
+// Rename sets the session's title through `hermes sessions rename`, not by
+// writing the DB. The profile flag is required for the same reason as in Delete:
+// without it the CLI looks in the default HERMES_HOME and reports the session as
+// not found, silently doing nothing.
+//
+// Verified on a real store: titles are not held in an FTS shadow table (only
+// messages_fts exists), so a title change carries none of the index-corruption
+// risk that makes Delete go through the CLI — but the CLI is still the supported
+// path, and consistency beats a special case.
+func (HermesAgent) Rename(s Session, title string) error {
+	args := []string{"sessions", "rename", s.ID, title}
+	if p := s.Extra["profile"]; p != "" && p != "default" {
+		args = append(args, "-p", p)
+	}
+	cmd := exec.Command("hermes", args...)
+	out, err := cmd.CombinedOutput()
+	msg := strings.TrimSpace(string(out))
+	if err != nil {
+		if msg == "" {
+			msg = err.Error()
+		}
+		return &renameError{msg}
+	}
+	// The CLI exits 0 while reporting "not found", so the output has to be read.
+	if strings.Contains(msg, "not found") {
+		return &renameError{msg}
+	}
+	return nil
+}
+
+type renameError struct{ msg string }
+
+func (e *renameError) Error() string { return "hermes rename failed: " + e.msg }
+
 // Relocate is unsupported for Hermes: a session's home is its profile/DB, not a
 // cwd, and moving rows across profile DBs isn't a meaningful operation here.
 func (HermesAgent) Relocate(s Session, newCwd string, asCopy bool) (string, error) {

@@ -351,3 +351,28 @@ func TestCleanTitlePlaceholderWithShortID(t *testing.T) {
 }
 
 func strp(s string) *string { return &s }
+
+// Rename writes into the .json Kiro itself reads, so Kiro's own listing shows it.
+func TestKiroRenameWritesTheJSONAndKeepsOtherFields(t *testing.T) {
+	sandboxHome(t)
+	writeKiroBundle(t, "sid1",
+		map[string]any{"cwd": "/proj", "title": "auto title", "created_at": "2026-01-01",
+			"session_state": map[string]any{"keep": "me"}},
+		map[string]string{".jsonl": kiroEvent("Prompt") + "\n"})
+
+	s := (KiroAgent{}).Scan()[0]
+	if err := (KiroAgent{}).Rename(s, "搬仓到内网 gitlab"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	meta := readKiroJSON(t, filepath.Join(kiroSessionsDir(), "sid1.json"))
+	if meta["title"] != "搬仓到内网 gitlab" {
+		t.Errorf("title: got %v", meta["title"])
+	}
+	if meta["cwd"] != "/proj" || meta["created_at"] != "2026-01-01" || meta["session_state"] == nil {
+		t.Errorf("rename clobbered other fields: %+v", meta)
+	}
+	if got := (KiroAgent{}).Scan()[0].Title; got != "搬仓到内网 gitlab" {
+		t.Errorf("scan still reports %q", got)
+	}
+}

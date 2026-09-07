@@ -364,3 +364,102 @@ func TestExtractText(t *testing.T) {
 		}
 	}
 }
+
+// Claude re-emits the same ai-title row many times and never with a different
+// value, so "one title value per file" is its own invariant — rewriting every row
+// preserves that rather than leaving a mix the reader would resolve by luck.
+func TestClaudeRenameRewritesEveryAITitleRow(t *testing.T) {
+	sandboxHome(t)
+	path := writeClaudeSession(t, "proj", "sid1",
+		userLine("sid1", "/proj", "a question"),
+		`{"type":"ai-title","aiTitle":"auto title","sessionId":"sid1"}`,
+		assistantLine("sid1", "/proj", "an answer"),
+		`{"type":"ai-title","aiTitle":"auto title","sessionId":"sid1"}`)
+
+	s := (ClaudeCodeAgent{}).Scan()[0]
+	if err := (ClaudeCodeAgent{}).Rename(s, "本项目架构梳理"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	var titles []string
+	lines := 0
+	forEachLine(path, func(line string) bool {
+		lines++
+		var o map[string]any
+		if json.Unmarshal([]byte(line), &o) == nil && o["type"] == "ai-title" {
+			titles = append(titles, o["aiTitle"].(string))
+		}
+		return true
+	})
+	if len(titles) != 2 || titles[0] != "本项目架构梳理" || titles[1] != "本项目架构梳理" {
+		t.Errorf("ai-title rows: got %v, want both rewritten", titles)
+	}
+	if lines != 4 {
+		t.Errorf("line count: got %d, want 4 (no rows added or lost)", lines)
+	}
+	if got := (ClaudeCodeAgent{}).Enrich((ClaudeCodeAgent{}).Scan()[0]).Title; got != "本项目架构梳理" {
+		t.Errorf("enrich still reports %q", got)
+	}
+}
+
+// A session Claude never titled has no ai-title row at all; one gets added so
+// the new title is actually persisted.
+func TestClaudeRenameAddsARowWhenNoneExists(t *testing.T) {
+	sandboxHome(t)
+	path := writeClaudeSession(t, "proj", "sid1", userLine("sid1", "/proj", "a question"))
+
+	s := (ClaudeCodeAgent{}).Scan()[0]
+	if err := (ClaudeCodeAgent{}).Rename(s, "手工命名"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	found := ""
+	forEachLine(path, func(line string) bool {
+		var o map[string]any
+		if json.Unmarshal([]byte(line), &o) == nil && o["type"] == "ai-title" {
+			found, _ = o["aiTitle"].(string)
+			if id, _ := o["sessionId"].(string); id != "sid1" {
+				t.Errorf("added row has sessionId %q, want sid1", id)
+			}
+		}
+		return true
+	})
+	if found != "手工命名" {
+		t.Errorf("no ai-title row was added (got %q)", found)
+	}
+	if got := (ClaudeCodeAgent{}).Enrich((ClaudeCodeAgent{}).Scan()[0]).Title; got != "手工命名" {
+		t.Errorf("enrich reports %q", got)
+	}
+}
+
+// A failed rewrite must not destroy the session: the replacement is built beside
+// the original and only renamed over it once complete.
+func TestClaudeRenameLeavesTheOriginalOnAnEmptyFile(t *testing.T) {
+	sandboxHome(t)
+	dir := filepath.Join(claudeProjectsRoot(), "proj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "empty.jsonl")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := (ClaudeCodeAgent{}).Rename(Session{ID: "empty", FilePaths: []string{path}}, "x")
+	if err == nil {
+		t.Fatal("expected an error renaming a session with no lines")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the original file was disturbed: %v", err)
+	}
+	if _, err := os.Stat(path + ".asbutler-tmp"); !os.IsNotExist(err) {
+		t.Error("a temp file was left behind")
+	}
+}
+
+func TestClaudeRenameWithoutAFileErrors(t *testing.T) {
+	sandboxHome(t)
+	if err := (ClaudeCodeAgent{}).Rename(Session{ID: "x"}, "t"); err == nil {
+		t.Error("expected an error renaming a session with no file")
+	}
+}

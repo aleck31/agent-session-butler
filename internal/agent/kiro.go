@@ -218,6 +218,19 @@ func (KiroAgent) Relocate(s Session, newCwd string, asCopy bool) (string, error)
 // kiroSetJSON rewrites the session's .json with the given session_id and cwd,
 // preserving all other fields.
 func kiroSetJSON(jsonPath, sid, cwd string) error {
+	return kiroPatchJSON(jsonPath, map[string]any{"session_id": sid, "cwd": cwd})
+}
+
+// Rename writes the new title into the session's .json, which is where Kiro
+// reads it from — so Kiro's own listing shows it too.
+func (KiroAgent) Rename(s Session, title string) error {
+	return kiroPatchJSON(s.CacheKey, map[string]any{"title": title}) // CacheKey is the .json path
+}
+
+// kiroPatchJSON sets the given fields in the session's .json, leaving every
+// other field as it was. Reads the whole file rather than streaming: unlike
+// Scan this has to write it all back anyway.
+func kiroPatchJSON(jsonPath string, fields map[string]any) error {
 	data, err := os.ReadFile(jsonPath)
 	if err != nil {
 		return err
@@ -226,8 +239,9 @@ func kiroSetJSON(jsonPath, sid, cwd string) error {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return err
 	}
-	m["session_id"] = sid
-	m["cwd"] = cwd
+	for k, v := range fields {
+		m[k] = v
+	}
 	out, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err

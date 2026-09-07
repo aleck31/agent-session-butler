@@ -1,8 +1,13 @@
 package agent
 
 import (
+	"bufio"
+	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -244,6 +249,99 @@ func (CodexAgent) Delete(s Session) error {
 type codexDeleteError struct{ msg string }
 
 func (e *codexDeleteError) Error() string { return "codex delete failed: " + e.msg }
+
+// Rename sets the session's title through the Codex app-server's JSON-RPC
+// `thread/name/set`, never by writing the index. Going through Codex matters for
+// more than the read-only rule: the call also updates
+// $CODEX_HOME/session_index.jsonl, which a direct DB write would leave stale.
+//
+// Two things about this API are not what its name suggests, both verified: the
+// parameter is `name` but the column it lands in is `title`, not the `threads.name`
+// column; and the transport is newline-delimited JSON-RPC, not LSP-style
+// Content-Length framing (which the server rejects outright).
+func (CodexAgent) Rename(s Session, title string) error {
+	return codexSetThreadName(s.ID, title)
+}
+
+// codexSetThreadName drives one short-lived `codex app-server` session: handshake,
+// set the name, then close stdin so the server flushes and exits on EOF.
+func codexSetThreadName(threadID, title string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "codex", "app-server")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("codex app-server: %w", err)
+	}
+	// Always reap the process, including on an early return.
+	defer func() {
+		stdin.Close()
+		_ = cmd.Wait()
+	}()
+
+	send := func(id int, method string, params any) error {
+		b, err := json.Marshal(map[string]any{"id": id, "method": method, "params": params})
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(stdin, "%s\n", b)
+		return err
+	}
+	if err := send(1, "initialize", map[string]any{
+		"clientInfo": map[string]any{"name": "asbutler", "version": "0.7.3"},
+	}); err != nil {
+		return err
+	}
+	if err := send(2, "thread/name/set", map[string]any{
+		"threadId": threadID, "name": title,
+	}); err != nil {
+		return err
+	}
+
+	// Read until the rename's response arrives; the stream also carries unrelated
+	// notifications, which are ignored.
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		var msg struct {
+			ID    int             `json:"id"`
+			Error json.RawMessage `json:"error"`
+		}
+		if json.Unmarshal(sc.Bytes(), &msg) != nil || msg.ID != 2 {
+			continue
+		}
+		if len(msg.Error) > 0 {
+			return fmt.Errorf("codex rename failed: %s", msg.Error)
+		}
+		// Close stdin here rather than in the defer alone: the server persists on
+		// EOF, so returning before it sees one can lose the write.
+		stdin.Close()
+		_ = cmd.Wait()
+		return nil
+	}
+	if msg := strings.TrimSpace(stderr.String()); msg != "" {
+		return fmt.Errorf("codex app-server gave no response: %s", lastLine(msg))
+	}
+	return errors.New("codex app-server closed without answering the rename")
+}
+
+// lastLine keeps an error message to the final, usually most specific, line.
+func lastLine(s string) string {
+	if i := strings.LastIndexByte(strings.TrimRight(s, "\n"), '\n'); i >= 0 {
+		return strings.TrimSpace(s[i+1:])
+	}
+	return s
+}
 
 // Relocate is unsupported: cwd is a NOT NULL column in the read-only index as
 // well as a field in the rollout file, with no CLI to change it. Rewriting only

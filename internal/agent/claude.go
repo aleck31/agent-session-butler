@@ -221,6 +221,67 @@ func (a ClaudeCodeAgent) Relocate(s Session, newCwd string, asCopy bool) (string
 	return id, nil
 }
 
+// Rename sets the session's title by rewriting its ai-title rows — the same row
+// type Claude writes itself, and the one our reader takes the title from.
+//
+// Verified against real history: Claude re-emits an ai-title row repeatedly (up
+// to 700 times in one file) but never with a different value — 0 of 47 files had
+// two distinct titles. So "one title value per file" is Claude's own invariant,
+// and rewriting every row preserves it rather than leaving a mix. Caveat worth
+// knowing: resuming the session may have Claude append its own title again, at
+// which point ours is superseded.
+func (a ClaudeCodeAgent) Rename(s Session, title string) error {
+	path := a.primaryFile(s)
+	if path == "" {
+		return errors.New("session has no file")
+	}
+	sessionID := s.ID
+
+	tmp := path + ".asbutler-tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	wrote := false
+	lines := 0
+	forEachLine(path, func(line string) bool {
+		var obj map[string]any
+		if json.Unmarshal([]byte(line), &obj) == nil {
+			if t, _ := obj["type"].(string); t == "ai-title" {
+				obj["aiTitle"] = title
+				if b, e := json.Marshal(obj); e == nil {
+					line = string(b)
+					wrote = true
+				}
+			}
+		}
+		fmt.Fprintln(out, line)
+		lines++
+		return true
+	})
+	if lines == 0 {
+		out.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("read no lines from %s", path)
+	}
+	// A session Claude never titled has no such row; add one so the title sticks.
+	if !wrote {
+		row, err := json.Marshal(map[string]any{"type": "ai-title", "aiTitle": title, "sessionId": sessionID})
+		if err != nil {
+			out.Close()
+			os.Remove(tmp)
+			return err
+		}
+		fmt.Fprintln(out, string(row))
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	// Rename over the original only once the replacement is complete on disk.
+	return os.Rename(tmp, path)
+}
+
 // claudeRewriteCwd streams src to dst, setting each JSON line's cwd to newCwd.
 // Non-JSON lines are copied verbatim. Errors (and reading nothing) return an
 // error so a move never deletes the source after a failed write.
