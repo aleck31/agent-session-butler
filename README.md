@@ -15,6 +15,7 @@ A single static Go binary. Runs on Linux, macOS, and Windows. Provides a termina
 - **Orphan detection** — directories that no longer exist (project deleted, sessions linger) are flagged `[missing]` — prime cleanup candidates.
 - **Lazy enrichment** — message count and titles are computed on demand, so a bare listing stays instant even with tens of MB of `.jsonl`.
 - **Move / copy sessions** — re-home a session to a new working directory when a repo moves (`~/ideas/foo` → `~/repos/foo`), so the agent can resume it at the new path. Move or copy, via CLI or the web UI. (Not supported for Hermes or Codex, whose cwd lives somewhere this tool only reads.)
+- **Rename sessions** — a title is the session's first prompt, so resuming the same task leaves several rows that read identically. Give one a name you'll recognise, written into the agent's own metadata so the agent shows it too. Click the title in the web UI, or `asbutler rename <id> <title>`.
 - **Lock-aware** — where the agent exposes a lock, sessions held by a **running** agent are detected (live PID check) and protected from deletion or relocation. Codex exposes none, so its deletion safety is delegated to `codex delete`.
 
 ### Supported agents
@@ -72,6 +73,7 @@ asbutler list -o              # only orphaned directories (implies --all)
 asbutler rm <id>...           # delete sessions by id; JSON results (-H for text)
 asbutler mv <id>... <new-cwd> # move sessions to a new working directory
 asbutler cp <id>... <new-cwd> # copy sessions to a new working directory (fresh ids)
+asbutler rename <id> <title>  # set a session's title, in the agent's own metadata
 asbutler webui                # open the browser UI (default http://127.0.0.1:7788)
 asbutler webui --addr :8080   # bind a different host:port
 asbutler webui --no-open      # start the server without opening a browser
@@ -94,6 +96,21 @@ go test ./internal/store/ -bench Scan -benchtime 5x -run '^$'   # whole scan, co
 
 Note: before 0.6.1 `list` had no path filter and always returned every session. Pass `--all` for that behaviour. Since 0.6.2 an unrecognised flag is an error rather than being silently ignored — a typo like `--paths ~/foo` used to fall back to the current directory and quietly return the wrong scope.
 
+### Renaming
+
+Titles come from a session's first prompt, which makes several sessions on one task indistinguishable. `rename` replaces the title in the agent's own store, so the change is visible in that agent too rather than only here. Every backend has an owner-blessed way to do it, and none of these write around the agent:
+
+| Agent | How the title is set |
+|-------|----------------------|
+| Kiro | the `title` field in the session's `.json` |
+| Claude Code | the `ai-title` rows in the session's `.jsonl` |
+| Codex | the app-server's JSON-RPC `thread/name/set` |
+| Hermes | `hermes sessions rename` |
+
+Two caveats worth knowing. Claude Code re-emits its own `ai-title` row as a session progresses, so resuming a renamed session may let it supersede your title (it never *changes* an existing value — verified across 47 real sessions — it just appends its own again). And `rename` takes one session at a time on purpose: giving several the same title would recreate the ambiguity it exists to remove.
+
+There is no length limit. Agents store far longer titles themselves — a Codex title is the raw first prompt, nearly 10,000 characters in one real case — so capping the input would make it impossible to put back a title that was already there. Clamping is done where titles are displayed.
+
 ### Downstream consumers
 
 The `list` JSON is a contract, not just output — at least one tool parses it, and nothing else in this repo points at it, so it's recorded here.
@@ -111,7 +128,7 @@ What that pins down, for anyone changing this code:
 
 ### Browser UI (`webui`)
 
-`asbutler webui` starts a local HTTP server, opens it in your default browser (skip with `--no-open`), and serves a self-contained two-pane master-detail view. A resizable sidebar (drag its right edge; the width is remembered) lists every working directory with a fixed header of agent-filter chips and a directory search; Hermes groups are labelled with their profile (`name <profile>`). Selecting a directory shows its sessions in a sortable table (Title / Agent / Messages / Size / Modified / Session ID; hover a session id to see it in full, click to copy). The agent chips toggle which agents are shown — like the CLI's `--agent`, all discovered agents are on by default. A persistent summary strip at the top of the detail pane carries a disk-usage bar split per agent plus an orphaned segment, each with its size and share of the total. Message counts and titles resolve on demand when a directory is opened. Rows are multi-selectable (Select all) for batch delete and batch move/copy, both behind a confirmation dialog; sessions held by a running agent are lock-protected. The batch move button counts only the sessions that can actually be relocated and says how many it skipped. A dark/bright theme toggle is remembered across visits and defaults to the system preference. The frontend (a small Alpine.js app) and its assets are embedded into the binary via `go:embed`, so it needs no network access and ships as a single file. Same core as the CLI — nothing new touches session parsing or deletion.
+`asbutler webui` starts a local HTTP server, opens it in your default browser (skip with `--no-open`), and serves a self-contained two-pane master-detail view. A resizable sidebar (drag its right edge; the width is remembered) lists every working directory with a fixed header of agent-filter chips and a directory search; Hermes groups are labelled with their profile (`name <profile>`). Selecting a directory shows its sessions in a sortable table (Title / Agent / Messages / Size / Modified / Session ID; hover a session id to see it in full, click to copy). The agent chips toggle which agents are shown — like the CLI's `--agent`, all discovered agents are on by default. A persistent summary strip at the top of the detail pane carries a disk-usage bar split per agent plus an orphaned segment, each with its size and share of the total. Message counts and titles resolve on demand when a directory is opened. Click a session's title to rename it in place (Enter commits, Escape cancels). Rows are multi-selectable (Select all) for batch delete and batch move/copy, both behind a confirmation dialog; sessions held by a running agent are lock-protected. The batch move button counts only the sessions that can actually be relocated and says how many it skipped. A dark/bright theme toggle is remembered across visits and defaults to the system preference. The frontend (a small Alpine.js app) and its assets are embedded into the binary via `go:embed`, so it needs no network access and ships as a single file. Same core as the CLI — nothing new touches session parsing or deletion.
 
 ## Project layout
 
