@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"strings"
 
 	"github.com/aleck/agent-session-butler/internal/store"
 	"github.com/aleck/agent-session-butler/internal/view"
@@ -36,6 +37,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/enrich", s.handleEnrich)
 	s.mux.HandleFunc("DELETE /api/session/{id}", s.handleDelete)
 	s.mux.HandleFunc("POST /api/session/{id}/relocate", s.handleRelocate)
+	s.mux.HandleFunc("POST /api/session/{id}/rename", s.handleRename)
 
 	// Static UI from the embedded web/ dir, served at the root.
 	sub, _ := fs.Sub(webFS, "web")
@@ -106,6 +108,26 @@ func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
 	}
 	// cwd is the normalised target, so the UI can show where it really went.
 	writeJSON(w, http.StatusOK, map[string]string{"id": newID, "cwd": resolved})
+}
+
+// handleRename sets a session's title in the owning agent's own metadata.
+// Body: {"title": "..."}. Returns {"title": <what was written>}, which is the
+// trimmed form rather than the raw input.
+func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Title) == "" {
+		writeError(w, http.StatusBadRequest, "expected JSON body with a non-empty \"title\"")
+		return
+	}
+	title, err := s.store.RenameByID(id, req.Title)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"title": title})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

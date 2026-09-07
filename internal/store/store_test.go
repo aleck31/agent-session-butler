@@ -19,8 +19,10 @@ type fakeAgent struct {
 	enriched  int // how many times Enrich was called
 	deleted   []string
 	relocated []string
+	renamed   []string
 	deleteErr error
 	relocErr  error
+	renameErr error
 }
 
 func (f *fakeAgent) Name() string    { return f.name }
@@ -44,6 +46,14 @@ func (f *fakeAgent) Delete(s agent.Session) error {
 		return f.deleteErr
 	}
 	f.deleted = append(f.deleted, s.ID)
+	return nil
+}
+
+func (f *fakeAgent) Rename(s agent.Session, title string) error {
+	if f.renameErr != nil {
+		return f.renameErr
+	}
+	f.renamed = append(f.renamed, s.ID+"="+title)
 	return nil
 }
 
@@ -600,4 +610,96 @@ func TestExpandPath(t *testing.T) {
 			t.Errorf("%s: ExpandPath(%q) = %q, want %q", name, tc.in, got, tc.want)
 		}
 	}
+}
+
+// Renaming writes into the owning agent's own metadata, so it is delegated and
+// the cached title has to go with it.
+func TestRenameByID(t *testing.T) {
+	t.Run("delegates and returns the trimmed title", func(t *testing.T) {
+		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/x", 1000)}}
+		s := newTestStore(f)
+		s.EnrichGroup(s.Scan()[0])
+
+		got, err := s.RenameByID("k1", "  a better name  ")
+		if err != nil {
+			t.Fatalf("rename: %v", err)
+		}
+		if got != "a better name" {
+			t.Errorf("title: got %q, want the trimmed form", got)
+		}
+		if len(f.renamed) != 1 || f.renamed[0] != "k1=a better name" {
+			t.Errorf("agent Rename calls: got %v", f.renamed)
+		}
+		if _, ok := s.cache["Kiro:k1"]; ok {
+			t.Error("the stale cached title survived the rename")
+		}
+	})
+
+	t.Run("blank titles are refused before the agent is called", func(t *testing.T) {
+		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/x", 1)}}
+		s := newTestStore(f)
+		for _, title := range []string{"", "   ", "\t\n"} {
+			if _, err := s.RenameByID("k1", title); err == nil {
+				t.Errorf("title %q: expected an error", title)
+			}
+		}
+		if len(f.renamed) != 0 {
+			t.Errorf("the agent was called with a blank title: %v", f.renamed)
+		}
+	})
+
+	// No length cap: agents store titles far longer than any sensible limit, so
+	// capping would make it impossible to put back a title that was already there.
+	t.Run("a very long title is accepted", func(t *testing.T) {
+		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/x", 1)}}
+		s := newTestStore(f)
+		long := strings.Repeat("题", 5000)
+		got, err := s.RenameByID("k1", long)
+		if err != nil {
+			t.Fatalf("rename: %v", err)
+		}
+		if got != long {
+			t.Errorf("title was altered: %d runes in, %d out", len([]rune(long)), len([]rune(got)))
+		}
+	})
+
+	t.Run("locked sessions are refused", func(t *testing.T) {
+		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/x", 1, locked())}}
+		s := newTestStore(f)
+		if _, err := s.RenameByID("k1", "new"); err == nil {
+			t.Error("expected an error renaming a locked session")
+		}
+		if len(f.renamed) != 0 {
+			t.Errorf("the agent was asked to rename a locked session: %v", f.renamed)
+		}
+	})
+
+	t.Run("agent errors surface and keep the cache", func(t *testing.T) {
+		boom := errors.New("hermes rename failed")
+		f := &fakeAgent{name: "Hermes", sessions: []agent.Session{sess("h1", "Hermes", "/x", 1000)}, renameErr: boom}
+		s := newTestStore(f)
+		s.EnrichGroup(s.Scan()[0])
+		if _, err := s.RenameByID("h1", "new"); !errors.Is(err, boom) {
+			t.Errorf("got %v, want the agent's error", err)
+		}
+		if _, ok := s.cache["Hermes:h1"]; !ok {
+			t.Error("a failed rename dropped the cache entry")
+		}
+	})
+
+	t.Run("unsupported agents surface their error", func(t *testing.T) {
+		f := &fakeAgent{name: "Ghost", sessions: []agent.Session{sess("g1", "Ghost", "/x", 1)},
+			renameErr: agent.ErrRenameUnsupported}
+		s := newTestStore(f)
+		if _, err := s.RenameByID("g1", "new"); !errors.Is(err, agent.ErrRenameUnsupported) {
+			t.Errorf("got %v, want ErrRenameUnsupported", err)
+		}
+	})
+
+	t.Run("unknown id errors", func(t *testing.T) {
+		s := newTestStore(&fakeAgent{name: "Kiro"})
+		if _, err := s.RenameByID("nope", "new"); err == nil {
+			t.Error("expected an error for an unknown id")
+		}
+	})
 }

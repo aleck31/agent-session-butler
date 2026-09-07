@@ -72,6 +72,7 @@ func TestAPIRoutesRejectTheWrongMethod(t *testing.T) {
 		{http.MethodGet, "/api/session/abc"},
 		{http.MethodPost, "/api/session/abc"},
 		{http.MethodGet, "/api/session/abc/relocate"},
+		{http.MethodGet, "/api/session/abc/rename"},
 	} {
 		w := do(t, h, tc.method, tc.path, `{}`)
 		if w.Code == http.StatusOK {
@@ -243,5 +244,35 @@ func TestSandboxIsolatesDiscovery(t *testing.T) {
 	}
 	if len(doc.Agents) != 0 {
 		t.Errorf("sandbox discovered agents %v — discovery is not isolated", doc.Agents)
+	}
+}
+
+func TestRenameRequiresATitle(t *testing.T) {
+	h := sandboxServer(t)
+	for name, body := range map[string]string{
+		"empty body":    "",
+		"not json":      "garbage",
+		"missing title": `{"other":1}`,
+		"empty title":   `{"title":""}`,
+		"blank title":   `{"title":"   "}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := do(t, h, http.MethodPost, "/api/session/abc/rename", body)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status: got %d, want 400", w.Code)
+			}
+			assertErrorBody(t, w)
+		})
+	}
+}
+
+func TestRenameUnknownSessionIsAConflict(t *testing.T) {
+	h := sandboxServer(t)
+	w := do(t, h, http.MethodPost, "/api/session/no-such-id/rename", `{"title":"x"}`)
+	if w.Code != http.StatusConflict {
+		t.Errorf("status: got %d, want 409", w.Code)
+	}
+	if msg := assertErrorBody(t, w); !strings.Contains(msg, "no-such-id") {
+		t.Errorf("error %q should name the id", msg)
 	}
 }

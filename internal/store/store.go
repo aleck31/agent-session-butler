@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -261,6 +262,43 @@ func (s *Store) RelocateByID(id, newCwd string, asCopy bool) (newID, resolvedCwd
 		}
 	}
 	return "", "", fmt.Errorf("no session with id %q", id)
+}
+
+// RenameByID sets a session's title in its owning agent's own metadata, so the
+// agent shows the new title too. Refuses locked sessions and blank titles.
+// Returns the trimmed title that was actually written.
+func (s *Store) RenameByID(id, title string) (string, error) {
+	t := strings.TrimSpace(title)
+	if t == "" {
+		return "", fmt.Errorf("title must not be empty")
+	}
+	// Deliberately no length cap. An earlier one at 200 runes looked sensible until
+	// it made the operation non-round-trippable: agents store far longer titles
+	// themselves (a Codex title is the raw first prompt, 9,934 characters in one
+	// real case), so a cap rejects putting back a title that was already there.
+	// Clamping is a display concern and already handled where titles are rendered.
+	for _, g := range s.Scan() {
+		for _, sess := range g.Sessions {
+			if sess.ID != id {
+				continue
+			}
+			if sess.Locked {
+				return "", fmt.Errorf("session is in use by a running process")
+			}
+			a := s.agentNamed(sess.Agent)
+			if a == nil {
+				return "", fmt.Errorf("unknown agent %q", sess.Agent)
+			}
+			if err := a.Rename(sess, t); err != nil {
+				return "", err
+			}
+			s.mu.Lock()
+			delete(s.cache, sess.CacheKey) // the cached title is now stale
+			s.mu.Unlock()
+			return t, nil
+		}
+	}
+	return "", fmt.Errorf("no session with id %q", id)
 }
 
 // group buckets sessions by cwd; newest session first within a group, and
