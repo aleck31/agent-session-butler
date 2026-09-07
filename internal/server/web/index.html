@@ -42,6 +42,9 @@
   }
   /* Shared height for the sidebar head and the summary strip so their bottom
      dividers line up across the split. */
+  /* --head-h is the shared floor for the sidebar and detail headers, so the top
+     band lines up. A floor, not a fixed height: narrow windows wrap the legend
+     and the chips, and growing is better than clipping them. */
   :root { --head-h: 96px; }
   * { box-sizing: border-box; }
   html { height: 100%; }
@@ -94,7 +97,7 @@
   .resizer { flex: none; width: 6px; margin-left: -3px; cursor: col-resize; z-index: 5; background: transparent; }
   .resizer:hover, .resizer.dragging { background: var(--sel-bord); opacity: .5; }
   body.resizing { cursor: col-resize; user-select: none; }
-  .side-head { flex: none; height: var(--head-h); padding: 0 16px; background: var(--header); border-bottom: 1px solid var(--line); display: flex; flex-direction: column; justify-content: center; gap: 11px; }
+  .side-head { flex: none; min-height: var(--head-h); padding: 11px 16px; background: var(--header); border-bottom: 1px solid var(--line); display: flex; flex-direction: column; justify-content: center; gap: 11px; }
   .side-title { font-family: system-ui, sans-serif; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 7px; }
   .agents { display: flex; gap: 6px; flex-wrap: wrap; }
   /* Agent chips double as filter toggles: dimmed when off, teal-tinted when on. */
@@ -126,11 +129,13 @@
   .badge { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--orphan); border: 1px solid var(--orphan); border-radius: 4px; padding: 1px 6px; }
 
   /* ── Persistent compact summary strip (top of detail pane) ───────────── */
-  .summary-strip { height: var(--head-h); padding: 0 22px; border-bottom: 1px solid var(--line); background: var(--header); display: flex; flex-direction: column; justify-content: center; gap: 8px; }
+  .summary-strip { flex: none; min-height: var(--head-h); padding: 10px 22px; border-bottom: 1px solid var(--line); background: var(--header); display: flex; flex-direction: column; justify-content: center; gap: 8px; }
   .summary-head { display: flex; align-items: center; gap: 12px; }
   .summary-title { font-family: system-ui, sans-serif; font-size: 16px; font-weight: 600; color: var(--ink); }
   .summary-head .btn { margin-left: auto; }
-  .usagebar { height: 9px; border-radius: 4px; overflow: hidden; display: flex; background: var(--panel-2); border: 1px solid var(--line); }
+  /* flex:none matters: as a 9px item in a column flex it is the smallest thing
+     in the strip, so a wrapping legend would otherwise shrink it to nothing. */
+  .usagebar { flex: none; height: 9px; border-radius: 4px; overflow: hidden; display: flex; background: var(--panel-2); border: 1px solid var(--line); }
   .usagebar > span { height: 100%; transition: width .45s ease; min-width: 2px; }
   .summary-nums { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
   .summary-nums .chunk { display: inline-flex; align-items: center; gap: 6px; }
