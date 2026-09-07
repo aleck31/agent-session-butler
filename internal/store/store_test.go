@@ -470,7 +470,7 @@ func TestRelocateByID(t *testing.T) {
 // makes the tool useful out of the box.
 func TestNewRegistersEveryAgent(t *testing.T) {
 	s := New()
-	want := map[string]bool{"Kiro": true, "Claude Code": true, "Hermes": true}
+	want := map[string]bool{"Kiro": true, "Claude Code": true, "Codex": true, "Hermes": true}
 	if len(s.agents) != len(want) {
 		t.Fatalf("registry size: got %d, want %d", len(s.agents), len(want))
 	}

@@ -84,6 +84,7 @@ func New() *Store {
 		agents: []agent.Agent{
 			agent.KiroAgent{},
 			agent.ClaudeCodeAgent{},
+			agent.CodexAgent{},
 			agent.HermesAgent{},
 		},
 		cache: map[string]cacheEntry{},
