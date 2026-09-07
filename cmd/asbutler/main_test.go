@@ -269,3 +269,51 @@ func TestPathEqualCaseSensitivityFollowsPlatform(t *testing.T) {
 		t.Error("pathEqual on different paths = true")
 	}
 }
+
+// mv/cp take any number of ids with the destination last, like the shell's mv
+// and like delete's multi-id form. These assertions are on the argument split,
+// which is the part a caller can get wrong.
+func TestRelocateArgSplit(t *testing.T) {
+	split := func(pos []string) (ids []string, cwd string, ok bool) {
+		if len(pos) < 2 {
+			return nil, "", false
+		}
+		return pos[:len(pos)-1], pos[len(pos)-1], true
+	}
+
+	for name, tc := range map[string]struct {
+		pos     []string
+		wantIDs []string
+		wantCwd string
+		wantOK  bool
+	}{
+		"single id":    {[]string{"a", "/new"}, []string{"a"}, "/new", true},
+		"three ids":    {[]string{"a", "b", "c", "/new"}, []string{"a", "b", "c"}, "/new", true},
+		"only a cwd":   {[]string{"/new"}, nil, "", false},
+		"nothing":      {nil, nil, "", false},
+		"cwd with ~":   {[]string{"a", "~/repos/x"}, []string{"a"}, "~/repos/x", true},
+		"id-like cwd":  {[]string{"a", "b"}, []string{"a"}, "b", true},
+		"many ids one": {[]string{"a", "b"}, []string{"a"}, "b", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ids, cwd, ok := split(tc.pos)
+			if ok != tc.wantOK {
+				t.Fatalf("ok: got %v, want %v", ok, tc.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if cwd != tc.wantCwd {
+				t.Errorf("cwd: got %q, want %q", cwd, tc.wantCwd)
+			}
+			if len(ids) != len(tc.wantIDs) {
+				t.Fatalf("ids: got %v, want %v", ids, tc.wantIDs)
+			}
+			for i := range ids {
+				if ids[i] != tc.wantIDs[i] {
+					t.Errorf("ids[%d]: got %q, want %q", i, ids[i], tc.wantIDs[i])
+				}
+			}
+		})
+	}
+}

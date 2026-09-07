@@ -75,8 +75,8 @@ Usage:
   asbutler list -a <agent>      Only sessions from a matching agent (e.g. -a claude)
   asbutler list -o              Only orphaned directories (implies --all)
   asbutler rm <id>...           Delete sessions by id; prints JSON results (-H for text)
-  asbutler mv <id> <new-cwd>    Move a session to a new working directory
-  asbutler cp <id> <new-cwd>    Copy a session to a new working directory (new id)
+  asbutler mv <id>... <new-cwd> Move sessions to a new working directory
+  asbutler cp <id>... <new-cwd> Copy sessions to a new working directory (fresh ids)
   asbutler webui [--addr host:port] [--no-open]  Open the local browser UI (default 127.0.0.1:7788)
   asbutler version              Print the version
   asbutler help                 Show this help
@@ -228,14 +228,7 @@ func cmdList(args []string) {
 // form that groups are keyed by. Resolution is best-effort: a path that no
 // longer exists still resolves to its absolute form so orphans stay queryable.
 func resolvePath(p string) (string, error) {
-	if p == "~" || strings.HasPrefix(p, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		p = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
-	}
-	abs, err := filepath.Abs(p)
+	abs, err := store.ExpandPath(p)
 	if err != nil {
 		return "", err
 	}
@@ -390,7 +383,9 @@ type relocateResult struct {
 	Error  string `json:"error,omitempty"`
 }
 
-// cmdRelocate handles `mv`/`cp <id> <new-cwd>`; asCopy picks copy vs move.
+// cmdRelocate handles `mv`/`cp <id>... <new-cwd>`; asCopy picks copy vs move.
+// Any number of ids, like delete takes; and as with the shell's own mv, the
+// final positional is the destination.
 func cmdRelocate(args []string, asCopy bool) {
 	name := "mv"
 	if asCopy {
@@ -405,32 +400,53 @@ func cmdRelocate(args []string, asCopy bool) {
 			pos = append(pos, a)
 		}
 	}
-	if len(pos) != 2 {
-		fmt.Fprintf(os.Stderr, "%s: usage: asbutler %s <session-id> <new-cwd>\n", name, name)
+	if len(pos) < 2 {
+		fmt.Fprintf(os.Stderr, "%s: usage: asbutler %s <session-id>... <new-cwd>\n", name, name)
 		os.Exit(2)
 	}
-	id, newCwd := pos[0], pos[1]
+	ids, newCwd := pos[:len(pos)-1], pos[len(pos)-1]
 
+	// Best-effort, reported per id. A locked session or an agent that cannot
+	// relocate will always fail, and rejecting the whole batch over one of those
+	// would leave no way to make progress; a move cannot be rolled back anyway,
+	// so an all-or-nothing guarantee is not on offer either way.
 	s := store.New()
-	newID, err := s.RelocateByID(id, newCwd, asCopy)
-	res := relocateResult{ID: newID, NewCwd: newCwd, Copied: asCopy}
-	if err != nil {
-		res.ID = id
-		res.Error = err.Error()
+	results := make([]relocateResult, 0, len(ids))
+	anyFail := false
+	for _, id := range ids {
+		newID, resolved, err := s.RelocateByID(id, newCwd, asCopy)
+		// Report the cwd it was actually filed under, not the string passed in —
+		// the target is expanded and normalised on the way through.
+		res := relocateResult{ID: newID, NewCwd: resolved, Copied: asCopy}
+		if err != nil {
+			res.ID = id
+			res.NewCwd = newCwd
+			res.Error = err.Error()
+			anyFail = true
+		}
+		results = append(results, res)
 	}
 
 	if human {
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "✗ %s: %s\n", id, err)
-		} else if asCopy {
-			fmt.Printf("✓ copied %s → %s (new id %s)\n", id, newCwd, newID)
-		} else {
-			fmt.Printf("✓ moved %s → %s\n", id, newCwd)
+		verb := "moved"
+		if asCopy {
+			verb = "copied"
+		}
+		for i, r := range results {
+			switch {
+			case r.Error != "":
+				fmt.Fprintf(os.Stderr, "✗ %s: %s\n", r.ID, r.Error)
+			case asCopy:
+				// r.ID is the fresh copy's id, so name the source separately.
+				fmt.Printf("✓ %s %s → %s (new id %s)\n", verb, ids[i], r.NewCwd, r.ID)
+			default:
+				fmt.Printf("✓ %s %s → %s\n", verb, r.ID, r.NewCwd)
+			}
 		}
 	} else {
-		writeJSON(res)
+		writeJSON(results)
 	}
-	if err != nil {
+	if anyFail {
 		os.Exit(1)
 	}
 }
