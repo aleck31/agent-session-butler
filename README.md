@@ -81,7 +81,16 @@ asbutler help
 
 Output is JSON by default (for agents); `-H`/`--human` gives readable text. `-a` / `--agent` matches the agent name by case-insensitive substring, so `-a claude` selects "Claude Code". `-o` / `--orphans` keeps only groups whose working directory no longer exists. `mv` / `cp` re-home a session so a relocated repo's session resumes at the new path (Hermes and Codex excluded).
 
-`list` is scoped to one directory by default because listing is only cheap when it is: the JSON path enriches every session it returns (reading each file to count messages), so a machine-wide `--all` over ~1.5 GiB of history takes ~35s where a single directory takes ~2s. `--path` narrows *before* enrichment. Matching is on the exact directory — a parent does not pick up its children's sessions — and tolerates `~`, relative paths, symlinks (macOS `/tmp` → `/private/tmp`), and case-insensitive filesystems. A directory with no sessions is an empty result, not an error.
+`list` is scoped to one directory by default because listing is only cheap when it is: the JSON path enriches every session it returns (reading each file to count messages), so a machine-wide `--all` over ~1.5 GiB of history takes ~35s where a single directory takes well under a second. `--path` narrows *before* enrichment. Matching is on the exact directory — a parent does not pick up its children's sessions — and tolerates `~`, relative paths, symlinks (macOS `/tmp` → `/private/tmp`), and case-insensitive filesystems. A directory with no sessions is an empty result, not an error.
+
+Titles come from a session's first prompt, so resuming the same task repeatedly leaves several sessions with the same title. Where titles collide **within one directory**, a short session-id suffix is appended (`… · d6a4de`) so they can be told apart; unique titles are left alone. `title` is a display string — use `id` as the identity.
+
+There are benchmarks for where a scan's time actually goes, per agent and end to end. They read real session data, so they only run when asked:
+
+```bash
+go test ./internal/agent/ -bench Scan -benchtime 5x -run '^$'   # per agent
+go test ./internal/store/ -bench Scan -benchtime 5x -run '^$'   # whole scan, cold and warm cache
+```
 
 Note: before 0.6.1 `list` had no path filter and always returned every session. Pass `--all` for that behaviour. Since 0.6.2 an unrecognised flag is an error rather than being silently ignored — a typo like `--paths ~/foo` used to fall back to the current directory and quietly return the wrong scope.
 

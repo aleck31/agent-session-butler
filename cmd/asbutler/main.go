@@ -16,7 +16,6 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/aleck/agent-session-butler/internal/agent"
 	"github.com/aleck/agent-session-butler/internal/server"
 	"github.com/aleck/agent-session-butler/internal/store"
 	"github.com/aleck/agent-session-butler/internal/view"
@@ -31,7 +30,7 @@ func writeJSON(v any) {
 }
 
 // version is the release version, printed by `asbutler version`.
-const version = "0.7.0"
+const version = "0.7.1"
 
 func main() {
 	args := os.Args[1:]
@@ -305,12 +304,14 @@ func listHuman(s *store.Store, installed []string, groups []store.Group, agentFi
 		fmt.Printf("● %s%s  (%d sessions, %s)\n",
 			g.Cwd, badge, len(g.Sessions), store.HumanSize(g.TotalSize()))
 		g = s.EnrichGroup(g)
-		printSessions(g.Sessions)
+		// Render through the view layer so both surfaces agree — notably on
+		// disambiguating titles that collide within a directory.
+		printSessions(view.GroupView(g).Sessions)
 		fmt.Println()
 	}
 }
 
-func printSessions(sessions []agent.Session) {
+func printSessions(sessions []view.Session) {
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(tw, "  ID\tAGENT\tMSGS\tSIZE\tMODIFIED\tTITLE")
 	for _, s := range sessions {
@@ -323,7 +324,7 @@ func printSessions(sessions []agent.Session) {
 			id = id[:12]
 		}
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\n",
-			id, s.Agent, msgs, store.HumanSize(s.FileSize),
+			id, s.Agent, msgs, s.SizeHuman,
 			s.ModifiedAt.Format("2006-01-02 15:04"), s.Title)
 	}
 	tw.Flush()
