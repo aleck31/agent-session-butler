@@ -9,8 +9,13 @@ cd "$(dirname "$0")"
 REPO="aleck31/agent-session-butler"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 BIN="$BIN_DIR/asbutler"
+# Staged alongside the target so the final step is a same-filesystem rename.
+STAGE="$BIN_DIR/.asbutler.$$"
 FROM_SOURCE=false
 [ "${1:-}" = "--build" ] && FROM_SOURCE=true
+
+mkdir -p "$BIN_DIR"
+trap 'rm -f "$STAGE"' EXIT
 
 norm() { awk -F. '{printf "%d.%d.%d", $1, ($2==""?0:$2), ($3==""?0:$3)}'; }
 
@@ -40,8 +45,8 @@ newer_than() {
 
 build_from_source() {
   echo "Building asbutler from source…"
-  mkdir -p "$BIN_DIR"
-  go build -o "$BIN" ./cmd/asbutler
+  go build -o "$STAGE" ./cmd/asbutler
+  install_staged
 }
 
 # Map this machine to the release asset suffix, e.g. linux-amd64 / darwin-arm64.
@@ -85,9 +90,8 @@ download_via_gh() {
   local suffix="$1" tag="$2"
   gh_ready || return 1
   echo "Downloading prebuilt binary via gh ($tag, $suffix)…"
-  mkdir -p "$BIN_DIR"
   gh release download "$tag" --repo "$REPO" \
-    --pattern "asbutler-$tag-$suffix" --output "$BIN" --clobber
+    --pattern "asbutler-$tag-$suffix" --output "$STAGE" --clobber
 }
 
 # Anonymous download — works once the repo is public.
@@ -97,8 +101,19 @@ download_via_curl() {
   url="https://github.com/$REPO/releases/download/$tag/asbutler-$tag-$suffix"
   echo "Downloading prebuilt binary ($tag, $suffix)…"
   echo "  $url"
-  mkdir -p "$BIN_DIR"
-  curl -fSL "$url" -o "$BIN" || return 1
+  curl -fSL "$url" -o "$STAGE" || return 1
+}
+
+# install_staged atomically replaces $BIN with the staged file.
+#
+# The rename is not a tidiness detail: macOS caches a binary's code signature
+# per inode, so writing over a running-or-previously-run executable in place
+# leaves the cached signature describing bytes that are no longer there, and the
+# kernel SIGKILLs it. The upgrade appeared to succeed and left an installed
+# binary that died instantly with exit 137. Renaming gives a fresh inode.
+install_staged() {
+  chmod +x "$STAGE"
+  mv -f "$STAGE" "$BIN"
 }
 
 download_release() {
@@ -108,7 +123,7 @@ download_release() {
   [ -n "$tag" ] || { echo "error: could not resolve the latest release tag" >&2; exit 1; }
 
   if download_via_gh "$suffix" "$tag" || download_via_curl "$suffix" "$tag"; then
-    chmod +x "$BIN"
+    install_staged
     return 0
   fi
 

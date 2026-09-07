@@ -42,7 +42,7 @@ Agent Session Butler only touches sessions when you ask: it deletes on request, 
 
 Installs `asbutler` to `~/.local/bin` (override with `BIN_DIR=...`); rerun any time to upgrade. By default it downloads the matching prebuilt binary from the [latest release](https://github.com/aleck31/agent-session-butler/releases/latest) — no Go needed. Pass `--build` to compile the checked-out source instead (needs Go 1.25+; use this when you've changed the code). Then use `asbutler webui`, `asbutler list`, etc. from anywhere.
 
-The installer prefers the GitHub CLI (`gh release download`) and falls back to an anonymous download, then to telling you to use `--build`. The `gh` path is first because it carries your credentials, which is what makes it work while the repo is private — anonymous release URLs 404 there. Either path works once the repo is public, so nothing needs changing then; `gh auth login` once is enough for now.
+The installer stages the new binary beside the target and renames it into place, rather than writing over the existing one — on macOS, overwriting an executable in place invalidates its cached code signature and the kernel kills it on the next run. It prefers the GitHub CLI (`gh release download`) and falls back to an anonymous download, then to telling you to use `--build`. The `gh` path is first because it carries your credentials, which is what makes it work while the repo is private — anonymous release URLs 404 there. Either path works once the repo is public, so nothing needs changing then; `gh auth login` once is enough for now.
 
 You can also grab a binary straight from the [releases page](https://github.com/aleck31/agent-session-butler/releases).
 

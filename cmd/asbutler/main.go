@@ -30,7 +30,7 @@ func writeJSON(v any) {
 }
 
 // version is the release version, printed by `asbutler version`.
-const version = "0.7.1"
+const version = "0.7.2"
 
 func main() {
 	args := os.Args[1:]
