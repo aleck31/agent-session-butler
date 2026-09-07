@@ -26,6 +26,18 @@ go_ok() {
   [ "$lowest" = "$(echo "$need" | norm)" ]
 }
 
+# The version the checked-out source would build, e.g. 0.7.0.
+source_version() {
+  awk -F'"' '/^const version = /{print $2; exit}' cmd/asbutler/main.go 2>/dev/null
+}
+
+# True if $1 is strictly newer than $2 (both bare X.Y.Z).
+newer_than() {
+  [ -n "$1" ] && [ -n "$2" ] || return 1
+  [ "$(echo "$1" | norm)" != "$(echo "$2" | norm)" ] &&
+    [ "$(printf '%s\n%s\n' "$(echo "$1" | norm)" "$(echo "$2" | norm)" | sort -V | tail -1)" = "$(echo "$1" | norm)" ]
+}
+
 build_from_source() {
   echo "Building asbutler from source…"
   mkdir -p "$BIN_DIR"
@@ -49,17 +61,30 @@ asset_suffix() {
   echo "${os}-${arch}${ext}"
 }
 
-# Download via gh, which carries the user's credentials — the only path that
-# works while the repo is private (anonymous release URLs 404 there).
+# gh first: it carries the user's credentials, the only way to reach release
+# assets while the repo is private (anonymous URLs 404 there).
+gh_ready() { command -v gh >/dev/null && gh auth status >/dev/null 2>&1; }
+
+# Latest release tag (e.g. v0.7.0), or empty. Cached so it is resolved once.
+LATEST_TAG=""
+latest_release_tag() {
+  [ -n "$LATEST_TAG" ] && { echo "$LATEST_TAG"; return 0; }
+  if gh_ready; then
+    LATEST_TAG="$(gh release view --repo "$REPO" --json tagName --jq .tagName 2>/dev/null || true)"
+  fi
+  if [ -z "$LATEST_TAG" ] && command -v curl >/dev/null; then
+    # No awk 'exit' — closing the pipe early makes curl fail under pipefail;
+    # read to EOF and keep the first match.
+    LATEST_TAG="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
+      | awk -F'"' '/"tag_name"/ && !seen {print $4; seen=1}' || true)"
+  fi
+  echo "$LATEST_TAG"
+}
+
 download_via_gh() {
-  local suffix="$1" tag
-  command -v gh >/dev/null || return 1
-  gh auth status >/dev/null 2>&1 || return 1
-
-  tag="$(gh release view --repo "$REPO" --json tagName --jq .tagName 2>/dev/null)" || return 1
-  [ -n "$tag" ] || return 1
-
-  echo "Downloading the latest prebuilt binary via gh ($tag, $suffix)…"
+  local suffix="$1" tag="$2"
+  gh_ready || return 1
+  echo "Downloading prebuilt binary via gh ($tag, $suffix)…"
   mkdir -p "$BIN_DIR"
   gh release download "$tag" --repo "$REPO" \
     --pattern "asbutler-$tag-$suffix" --output "$BIN" --clobber
@@ -67,27 +92,22 @@ download_via_gh() {
 
 # Anonymous download — works once the repo is public.
 download_via_curl() {
-  local suffix="$1" tag url
+  local suffix="$1" tag="$2" url
   command -v curl >/dev/null || return 1
-
-  # Latest release tag via the GitHub API. No awk 'exit' — closing the pipe
-  # early makes curl fail under pipefail; read to EOF and keep the first match.
-  tag="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-    | awk -F'"' '/"tag_name"/ && !seen {print $4; seen=1}')" || return 1
-  [ -n "$tag" ] || return 1
-
   url="https://github.com/$REPO/releases/download/$tag/asbutler-$tag-$suffix"
-  echo "Downloading the latest prebuilt binary ($suffix)…"
+  echo "Downloading prebuilt binary ($tag, $suffix)…"
   echo "  $url"
   mkdir -p "$BIN_DIR"
   curl -fSL "$url" -o "$BIN" || return 1
 }
 
 download_release() {
-  local suffix
+  local suffix tag
   suffix="$(asset_suffix)" || exit 1
+  tag="$(latest_release_tag)"
+  [ -n "$tag" ] || { echo "error: could not resolve the latest release tag" >&2; exit 1; }
 
-  if download_via_gh "$suffix" || download_via_curl "$suffix"; then
+  if download_via_gh "$suffix" "$tag" || download_via_curl "$suffix" "$tag"; then
     chmod +x "$BIN"
     return 0
   fi
@@ -101,6 +121,24 @@ download_release() {
 
 # Default to the prebuilt binary (fast, no toolchain). --build compiles the
 # checked-out source — that's the path to use when you've changed the code.
+#
+# But never silently downgrade: running this from a checkout that is ahead of the
+# latest release used to install the older release over the newer source, which
+# looks like "upgrade did nothing". When the source is ahead, build it.
+if ! $FROM_SOURCE; then
+  src="$(source_version)"
+  rel="$(latest_release_tag | sed 's/^v//')"
+  if newer_than "$src" "$rel"; then
+    if go_ok; then
+      echo "note: this checkout is v$src, ahead of the latest release v$rel — building from source."
+      FROM_SOURCE=true
+    else
+      echo "warning: this checkout is v$src but the latest release is v$rel, and Go is not available" >&2
+      echo "         to build it — installing the older release v$rel instead." >&2
+    fi
+  fi
+fi
+
 if $FROM_SOURCE; then
   go_ok || { echo "error: --build needs Go $(awk '/^go /{print $2; exit}' go.mod)+ installed" >&2; exit 1; }
   build_from_source
