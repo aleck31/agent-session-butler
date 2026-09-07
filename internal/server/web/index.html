@@ -113,6 +113,10 @@
   .dir .ic { color: var(--faint); flex: none; }
   .dir-txt { min-width: 0; flex: 1; }
   .dir-name { font-size: 13px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* direction:rtl makes the ellipsis eat the *start* of the path, keeping the
+     tail — the informative part — visible. The text itself must still be tagged
+     LTR (see dirPath) or the leading "/" is bidi-neutral and gets rendered at
+     the far end, so /Users/x/y reads as "Users/x/y/". */
   .dir-path { font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
   .dir-badge { font-size: 11px; color: var(--muted); background: var(--panel-2); border-radius: 10px; padding: 1px 8px; flex: none; min-width: 30px; text-align: center; }
   .dir.sel .dir-badge { background: var(--sel-bord); color: #fff; }
@@ -246,7 +250,7 @@
             <span class="ic"><svg class="icon"><use href="#i-folder"/></svg></span>
             <div class="dir-txt">
               <div class="dir-name" x-text="g.displayName || g.cwd"></div>
-              <div class="dir-path" x-text="g.cwd"></div>
+              <div class="dir-path" x-text="dirPath(g.cwd)"></div>
             </div>
             <span class="mini-missing" x-show="g.orphan">missing</span>
             <span class="dir-badge" x-text="activeInGroup(g)"></span>
@@ -300,6 +304,11 @@
             <div class="dh-sub" x-text="`${selected.cwd} · ${selected.sessionCount} sessions · ${selected.totalSizeHuman}`"></div>
             <div class="dh-actions">
               <button class="btn" @click="toggleSelectAll()" x-text="allSelected() ? 'Deselect all' : 'Select all'"></button>
+              <button class="btn" x-show="relocatableSelected().length > 0" @click="askRelocateSelected()"
+                      :title="relocatableSelected().length < selectedIds.size
+                        ? `${selectedIds.size - relocatableSelected().length} of the selected sessions can't be moved`
+                        : 'Move or copy the selected sessions to another directory'"
+                      x-text="`Move ${relocatableSelected().length} selected`"></button>
               <button class="btn btn-danger" x-show="selectedIds.size > 0" @click="askDeleteSelected()"
                       x-text="`Delete ${selectedIds.size} selected`"></button>
             </div>
@@ -333,8 +342,8 @@
                               x-text="copiedID === s.id ? 'copied ✓' : shortId(s.id)"></button>
                     </td>
                     <td style="text-align:right; white-space:nowrap">
-                      <button class="rowdel" :disabled="s.locked || s.agent === 'Hermes'"
-                              :title="s.agent === 'Hermes' ? 'Move/copy not supported for Hermes' : 'Move or copy to another directory'"
+                      <button class="rowdel" :disabled="!canRelocate(s)"
+                              :title="relocateWhyNot(s) || 'Move or copy to another directory'"
                               @click="askRelocate(s)"><svg class="icon"><use href="#i-move"/></svg></button>
                       <button class="rowdel" :disabled="s.locked" @click="askDeleteOne(s)" title="Delete"><svg class="icon"><use href="#i-trash"/></svg></button>
                     </td>
@@ -370,7 +379,7 @@
   <template x-if="reloc">
     <div class="scrim" @click.self="reloc=null">
       <div class="dialog">
-        <h2>Move or copy session</h2>
+        <h2 x-text="reloc.ids.length > 1 ? `Move or copy ${reloc.ids.length} sessions` : 'Move or copy session'"></h2>
         <p class="target" x-text="reloc.title"></p>
         <p>New working directory:</p>
         <input class="side-search" style="margin-top:6px" type="text" x-model="reloc.newCwd"
@@ -378,9 +387,9 @@
         <div class="err" x-show="relocError" x-text="relocError"></div>
         <div class="dialog-actions">
           <button class="btn" @click="reloc=null" :disabled="relocating">Cancel</button>
-          <button class="btn" @click="confirmRelocate(true)" :disabled="relocating || !reloc.newCwd.trim()"
+          <button class="btn" @click="confirmRelocate(true)" :disabled="relocating || !reloc?.newCwd?.trim()"
                   x-text="relocating ? 'working…' : 'Copy'"></button>
-          <button class="btn btn-primary" @click="confirmRelocate(false)" :disabled="relocating || !reloc.newCwd.trim()"
+          <button class="btn btn-primary" @click="confirmRelocate(false)" :disabled="relocating || !reloc?.newCwd?.trim()"
                   x-text="relocating ? 'working…' : 'Move'"></button>
         </div>
       </div>
@@ -600,28 +609,73 @@ function butler() {
       this.pending = { ids: [s.id], label: s.title + '  (' + s.agent + ' · ' + s.sizeHuman + ')' };
     },
 
+    // dirPath prefixes a left-to-right mark so the path renders correctly inside
+    // the rtl-truncated sidebar label. Without it the leading "/" is treated as
+    // bidi-neutral and lands at the visual end: /Users/x/y reads as "Users/x/y/",
+    // which looks like a trailing slash the string does not have.
+    dirPath(cwd) { return '\u200e' + cwd; },
+
+    // Agents whose cwd this tool can only read cannot be re-homed; see the README.
+    // Kept as one predicate so the row button, the batch button and the count all
+    // agree instead of each re-deriving the rule.
+    NO_RELOCATE: ['Hermes', 'Codex'],
+    relocateWhyNot(s) {
+      if (this.NO_RELOCATE.includes(s.agent)) return `Move/copy not supported for ${s.agent}`;
+      if (s.locked) return 'In use by a running agent';
+      return '';
+    },
+    canRelocate(s) { return !this.relocateWhyNot(s); },
+    // Selected sessions that can actually be relocated. The button counts these,
+    // not the selection, so it never promises work it will not do.
+    relocatableSelected() {
+      return (this.selected?.sessions || []).filter(s => this.selectedIds.has(s.id) && this.canRelocate(s));
+    },
+
     askRelocate(s) {
       this.relocError = '';
-      this.reloc = { id: s.id, title: s.title + '  (' + s.agent + ')', newCwd: s.cwd || '' };
+      this.reloc = { ids: [s.id], title: s.title + '  (' + s.agent + ')', newCwd: s.cwd || '' };
+    },
+    askRelocateSelected() {
+      const list = this.relocatableSelected();
+      if (!list.length) return;
+      this.relocError = '';
+      const skipped = this.selectedIds.size - list.length;
+      this.reloc = {
+        ids: list.map(s => s.id),
+        title: `${list.length} sessions from ${this.selected.displayName || this.selected.cwd}`
+             + (skipped ? `  (${skipped} skipped — can't be moved)` : ''),
+        newCwd: this.selected.cwd || '',
+      };
     },
     async confirmRelocate(asCopy) {
       if (!this.reloc || !this.reloc.newCwd.trim()) return;
       this.relocating = true; this.relocError = '';
-      try {
-        const r = await fetch('/api/session/' + encodeURIComponent(this.reloc.id) + '/relocate', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ newCwd: this.reloc.newCwd.trim(), copy: asCopy }),
-        });
-        if (r.ok) {
-          this.reloc = null;
-          await this.load(); // rescan so the session shows under its new cwd
-        } else {
-          const b = await r.json().catch(() => ({}));
-          this.relocError = b.error || ('Failed (' + r.status + ').');
-        }
-      } catch (_) {
-        this.relocError = 'Network error — is the server still running?';
-      } finally { this.relocating = false; }
+      const cwd = this.reloc.newCwd.trim();
+      const ids = [...this.reloc.ids]; // captured: this.reloc is cleared on success
+      const failed = [];
+      // Best-effort per id, matching the CLI and the batch delete: one refusal
+      // must not strand the rest, and a move cannot be rolled back anyway.
+      for (const id of ids) {
+        try {
+          const r = await fetch('/api/session/' + encodeURIComponent(id) + '/relocate', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ newCwd: cwd, copy: asCopy }),
+          });
+          if (!r.ok) {
+            const b = await r.json().catch(() => ({}));
+            failed.push(`${this.shortId(id)}: ${b.error || r.status}`);
+          }
+        } catch (_) { failed.push(`${this.shortId(id)}: network error`); }
+      }
+      this.relocating = false;
+      if (failed.length) {
+        this.relocError = (failed.length === ids.length ? 'Failed:\n' : 'Some failed:\n') + failed.join('\n');
+        await this.load(); // some may have succeeded — resync before the user retries
+      } else {
+        this.reloc = null;
+        this.selectedIds = new Set();
+        await this.load(); // rescan so the sessions show under their new cwd
+      }
     },
     askDeleteSelected() {
       const ids = [...this.selectedIds];
