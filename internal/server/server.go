@@ -99,12 +99,13 @@ func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "expected JSON body with a non-empty \"newCwd\"")
 		return
 	}
-	newID, err := s.store.RelocateByID(id, req.NewCwd, req.Copy)
+	newID, resolved, err := s.store.RelocateByID(id, req.NewCwd, req.Copy)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"id": newID})
+	// cwd is the normalised target, so the UI can show where it really went.
+	writeJSON(w, http.StatusOK, map[string]string{"id": newID, "cwd": resolved})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

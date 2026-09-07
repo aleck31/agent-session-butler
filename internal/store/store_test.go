@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -390,18 +391,22 @@ func TestDeleteByID(t *testing.T) {
 
 func TestRelocateByID(t *testing.T) {
 	t.Run("move keeps the id", func(t *testing.T) {
+		dest := t.TempDir()
 		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/old", 1000)}}
 		s := newTestStore(f)
 		s.EnrichGroup(s.Scan()[0])
 
-		got, err := s.RelocateByID("k1", "/new", false)
+		got, resolved, err := s.RelocateByID("k1", dest, false)
 		if err != nil {
 			t.Fatalf("relocate: %v", err)
 		}
 		if got != "k1" {
 			t.Errorf("id: got %q, want k1", got)
 		}
-		if len(f.relocated) != 1 || f.relocated[0] != "k1→/new" {
+		if resolved != dest {
+			t.Errorf("resolved cwd: got %q, want %q", resolved, dest)
+		}
+		if len(f.relocated) != 1 || f.relocated[0] != "k1→"+dest {
 			t.Errorf("agent Relocate calls: got %v", f.relocated)
 		}
 		// The old cache entry is stale once the session has moved.
@@ -413,7 +418,7 @@ func TestRelocateByID(t *testing.T) {
 	t.Run("copy gets a new id", func(t *testing.T) {
 		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/old", 1)}}
 		s := newTestStore(f)
-		got, err := s.RelocateByID("k1", "/new", true)
+		got, _, err := s.RelocateByID("k1", t.TempDir(), true)
 		if err != nil {
 			t.Fatalf("relocate: %v", err)
 		}
@@ -426,7 +431,7 @@ func TestRelocateByID(t *testing.T) {
 		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/old", 1)}}
 		s := newTestStore(f)
 		for _, cwd := range []string{"", "   ", "\t"} {
-			if _, err := s.RelocateByID("k1", cwd, false); err == nil {
+			if _, _, err := s.RelocateByID("k1", cwd, false); err == nil {
 				t.Errorf("cwd %q: expected an error", cwd)
 			}
 		}
@@ -438,7 +443,7 @@ func TestRelocateByID(t *testing.T) {
 	t.Run("locked sessions are refused", func(t *testing.T) {
 		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/old", 1, locked())}}
 		s := newTestStore(f)
-		if _, err := s.RelocateByID("k1", "/new", false); err == nil {
+		if _, _, err := s.RelocateByID("k1", t.TempDir(), false); err == nil {
 			t.Error("expected an error relocating a locked session")
 		}
 		if len(f.relocated) != 0 {
@@ -453,14 +458,14 @@ func TestRelocateByID(t *testing.T) {
 			relocErr: agent.ErrRelocateUnsupported,
 		}
 		s := newTestStore(f)
-		if _, err := s.RelocateByID("h1", "/new", false); !errors.Is(err, agent.ErrRelocateUnsupported) {
+		if _, _, err := s.RelocateByID("h1", t.TempDir(), false); !errors.Is(err, agent.ErrRelocateUnsupported) {
 			t.Errorf("got %v, want ErrRelocateUnsupported", err)
 		}
 	})
 
 	t.Run("unknown id errors", func(t *testing.T) {
 		s := newTestStore(&fakeAgent{name: "Kiro"})
-		if _, err := s.RelocateByID("nope", "/new", false); err == nil {
+		if _, _, err := s.RelocateByID("nope", t.TempDir(), false); err == nil {
 			t.Error("expected an error for an unknown id")
 		}
 	})
@@ -482,5 +487,117 @@ func TestNewRegistersEveryAgent(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Errorf("missing from the default registry: %v", want)
+	}
+}
+
+// A session's cwd is what lets an agent resume it and what this tool groups on,
+// so a target that can never be reached must be refused rather than silently
+// producing one more orphan. The realistic failure here is a typo.
+func TestRelocateRejectsUnusableTargets(t *testing.T) {
+	existing := t.TempDir()
+	aFile := filepath.Join(existing, "notadir")
+	if err := os.WriteFile(aFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, target := range map[string]string{
+		"relative path":     "relative/path",
+		"bare name":         "somedir",
+		"dot":               ".",
+		"missing directory": filepath.Join(existing, "does-not-exist"),
+		"a file":            aFile,
+		"empty":             "",
+		"whitespace":        "   ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/old", 1)}}
+			s := newTestStore(f)
+			_, _, err := s.RelocateByID("k1", target, false)
+			// "." resolves to the test's working directory, which does exist, so it
+			// is accepted — the point of the case is that it is not stored verbatim.
+			if name == "dot" {
+				if err != nil {
+					t.Fatalf("relocate: %v", err)
+				}
+				if len(f.relocated) != 1 || strings.HasSuffix(f.relocated[0], "→.") {
+					t.Errorf("%q was not expanded before being stored: %v", target, f.relocated)
+				}
+				return
+			}
+			if err == nil {
+				t.Errorf("target %q was accepted; want a rejection", target)
+			}
+			if len(f.relocated) != 0 {
+				t.Errorf("the agent was called with an unusable target: %v", f.relocated)
+			}
+		})
+	}
+}
+
+// A ~ must be expanded, not stored literally: the web UI and any programmatic
+// caller pass it through unexpanded, and `list --path` already handles it.
+func TestRelocateExpandsTilde(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := os.Mkdir(filepath.Join(home, "repos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/old", 1)}}
+	s := newTestStore(f)
+	_, resolved, err := s.RelocateByID("k1", "~/repos", false)
+	if err != nil {
+		t.Fatalf("relocate: %v", err)
+	}
+	want := filepath.Join(home, "repos")
+	if resolved != want {
+		t.Errorf("resolved cwd: got %q, want %q", resolved, want)
+	}
+	if len(f.relocated) != 1 || f.relocated[0] != "k1→"+want {
+		t.Errorf("the agent got an unexpanded target: %v", f.relocated)
+	}
+}
+
+// A trailing slash and redundant segments are cleaned, so the stored cwd matches
+// what a `list --path` query resolves to.
+func TestRelocateNormalisesTheTarget(t *testing.T) {
+	dest := t.TempDir()
+	f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/old", 1)}}
+	s := newTestStore(f)
+
+	_, resolved, err := s.RelocateByID("k1", dest+string(filepath.Separator)+"."+string(filepath.Separator), false)
+	if err != nil {
+		t.Fatalf("relocate: %v", err)
+	}
+	if resolved != dest {
+		t.Errorf("resolved cwd: got %q, want %q", resolved, dest)
+	}
+}
+
+func TestExpandPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	for name, tc := range map[string]struct{ in, want string }{
+		"tilde alone":    {"~", home},
+		"tilde slash":    {"~/", home},
+		"under home":     {"~/proj", filepath.Join(home, "proj")},
+		"absolute":       {"/a/b", filepath.Join("/a", "b")},
+		"trailing slash": {"/a/b/", filepath.Join("/a", "b")},
+		"dot segments":   {"/a/./b/../b", filepath.Join("/a", "b")},
+		"literal tilde":  {"~notahome", ""}, // relative → becomes cwd-relative
+	} {
+		got, err := ExpandPath(tc.in)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !filepath.IsAbs(got) {
+			t.Errorf("%s: ExpandPath(%q) = %q, want an absolute path", name, tc.in, got)
+		}
+		if tc.want != "" && got != tc.want {
+			t.Errorf("%s: ExpandPath(%q) = %q, want %q", name, tc.in, got, tc.want)
+		}
 	}
 }

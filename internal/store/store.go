@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -230,11 +229,14 @@ func (s *Store) DeleteByID(id string) error {
 }
 
 // RelocateByID moves (or copies, if asCopy) the session with the given id to
-// newCwd, delegating to the owning agent. Returns the resulting session id.
-// Refuses locked sessions and rejects an empty target cwd.
-func (s *Store) RelocateByID(id, newCwd string, asCopy bool) (string, error) {
-	if strings.TrimSpace(newCwd) == "" {
-		return "", fmt.Errorf("target cwd must not be empty")
+// newCwd, delegating to the owning agent. Returns the resulting session id and
+// the normalised cwd it was actually filed under — the target is expanded and
+// validated, so what gets stored is not necessarily the string passed in.
+// Refuses locked sessions and targets that are not an existing directory.
+func (s *Store) RelocateByID(id, newCwd string, asCopy bool) (newID, resolvedCwd string, err error) {
+	target, err := resolveTargetCwd(newCwd)
+	if err != nil {
+		return "", "", err
 	}
 	for _, g := range s.Scan() {
 		for _, sess := range g.Sessions {
@@ -242,23 +244,23 @@ func (s *Store) RelocateByID(id, newCwd string, asCopy bool) (string, error) {
 				continue
 			}
 			if sess.Locked {
-				return "", fmt.Errorf("session is in use by a running process")
+				return "", "", fmt.Errorf("session is in use by a running process")
 			}
 			a := s.agentNamed(sess.Agent)
 			if a == nil {
-				return "", fmt.Errorf("unknown agent %q", sess.Agent)
+				return "", "", fmt.Errorf("unknown agent %q", sess.Agent)
 			}
-			newID, err := a.Relocate(sess, newCwd, asCopy)
+			newID, err := a.Relocate(sess, target, asCopy)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			s.mu.Lock()
 			delete(s.cache, sess.CacheKey) // moved/copied → old cache entry is stale
 			s.mu.Unlock()
-			return newID, nil
+			return newID, target, nil
 		}
 	}
-	return "", fmt.Errorf("no session with id %q", id)
+	return "", "", fmt.Errorf("no session with id %q", id)
 }
 
 // group buckets sessions by cwd; newest session first within a group, and
