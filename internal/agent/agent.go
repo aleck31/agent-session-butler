@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -104,6 +105,31 @@ func copyTree(src, dst string, info os.FileInfo) error {
 		}
 	}
 	return nil
+}
+
+// clampTitle collapses a title to one line and clamps it for a table column.
+// Agents whose "title" is really a raw first prompt (Kiro, Codex) need this —
+// those run to tens of KB.
+func clampTitle(s string) string {
+	oneLine := strings.Join(strings.FieldsFunc(s, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	}), " ")
+	oneLine = strings.TrimSpace(oneLine)
+	if len([]rune(oneLine)) > 80 {
+		return string([]rune(oneLine)[:80]) + "…"
+	}
+	return oneLine
+}
+
+// shortTail returns a session id's last 8 characters, for a display placeholder.
+// The tail, not the head: Hermes and Codex ids are time-ordered, so leading
+// characters are shared between sessions and the tail is what distinguishes
+// them. Ids are opaque and must never be parsed for meaning.
+func shortTail(id string) string {
+	if len(id) > 8 {
+		return id[len(id)-8:]
+	}
+	return id
 }
 
 // forEachLine streams a file line by line, calling handle for each until it

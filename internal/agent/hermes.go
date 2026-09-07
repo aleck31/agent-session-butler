@@ -268,18 +268,7 @@ func hermesTitle(raw, id string) string {
 	if t != "" {
 		return t
 	}
-	return "(untitled · " + hermesShortID(id) + ")"
-}
-
-// hermesShortID returns a short distinguishing suffix of the id. The id is an
-// opaque primary key — three formats coexist (timestamp, cron_-prefixed, UUID)
-// and MUST NOT be parsed. Every format's most-distinguishing part is its tail
-// (leading segments share a date/prefix), so take the last 8 chars verbatim.
-func hermesShortID(id string) string {
-	if len(id) > 8 {
-		return id[len(id)-8:]
-	}
-	return id
+	return "(untitled · " + shortTail(id) + ")"
 }
 
 func unixToTime(sec float64) time.Time {

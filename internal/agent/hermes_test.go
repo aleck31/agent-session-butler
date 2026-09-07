@@ -324,7 +324,7 @@ func TestHermesRelocateIsUnsupported(t *testing.T) {
 
 // ADR-0001 D6: three id formats coexist and the id must never be parsed — the
 // short form is just the last 8 characters, verbatim.
-func TestHermesShortIDTakesTheTailVerbatim(t *testing.T) {
+func TestShortTailTakesTheTailVerbatim(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"20260722T222900-abc123ef", "abc123ef"},
 		{"cron_nightly_report_9f2b1c4d", "9f2b1c4d"},
@@ -332,8 +332,8 @@ func TestHermesShortIDTakesTheTailVerbatim(t *testing.T) {
 		{"short", "short"},
 		{"exactly8", "exactly8"},
 	} {
-		if got := hermesShortID(tc.in); got != tc.want {
-			t.Errorf("hermesShortID(%q) = %q, want %q", tc.in, got, tc.want)
+		if got := shortTail(tc.in); got != tc.want {
+			t.Errorf("shortTail(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

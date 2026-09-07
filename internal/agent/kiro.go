@@ -270,15 +270,7 @@ func cleanTitle(raw *string, sid string) string {
 		return placeholder
 	}
 
-	// Collapse to a single line and clamp length for the table.
-	oneLine := strings.Join(strings.FieldsFunc(t, func(r rune) bool {
-		return r == '\n' || r == '\r'
-	}), " ")
-	oneLine = strings.TrimSpace(oneLine)
-	if len([]rune(oneLine)) > 80 {
-		return string([]rune(oneLine)[:80]) + "…"
-	}
-	return oneLine
+	return clampTitle(t)
 }
 
 func strOrNil(v any) *string {
