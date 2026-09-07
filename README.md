@@ -70,8 +70,8 @@ asbutler list -H              # human-readable, grouped by working directory
 asbutler list -a claude       # only a matching agent (case-insensitive substring)
 asbutler list -o              # only orphaned directories (implies --all)
 asbutler rm <id>...           # delete sessions by id; JSON results (-H for text)
-asbutler mv <id> <new-cwd>    # move a session to a new working directory
-asbutler cp <id> <new-cwd>    # copy a session to a new working directory (new id)
+asbutler mv <id>... <new-cwd> # move sessions to a new working directory
+asbutler cp <id>... <new-cwd> # copy sessions to a new working directory (fresh ids)
 asbutler webui                # open the browser UI (default http://127.0.0.1:7788)
 asbutler webui --addr :8080   # bind a different host:port
 asbutler webui --no-open      # start the server without opening a browser
@@ -79,7 +79,7 @@ asbutler version              # print the version
 asbutler help
 ```
 
-Output is JSON by default (for agents); `-H`/`--human` gives readable text. `-a` / `--agent` matches the agent name by case-insensitive substring, so `-a claude` selects "Claude Code". `-o` / `--orphans` keeps only groups whose working directory no longer exists. `mv` / `cp` re-home a session so a relocated repo's session resumes at the new path (Hermes and Codex excluded).
+Output is JSON by default (for agents); `-H`/`--human` gives readable text. `-a` / `--agent` matches the agent name by case-insensitive substring, so `-a claude` selects "Claude Code". `-o` / `--orphans` keeps only groups whose working directory no longer exists. `mv` / `cp` re-home sessions so a relocated repo's sessions resume at the new path (Hermes and Codex excluded). They take any number of ids with the destination last, and report per id like `rm` does — a locked session or an unsupported agent fails on its own without stranding the rest. The target is expanded (`~`, relative paths) and must be an existing directory: a typo would otherwise be stored verbatim and quietly turn the session into an orphan no directory query can reach.
 
 `list` is scoped to one directory by default because listing is only cheap when it is: the JSON path enriches every session it returns (reading each file to count messages), so a machine-wide `--all` over ~1.5 GiB of history takes ~35s where a single directory takes well under a second. `--path` narrows *before* enrichment. Matching is on the exact directory — a parent does not pick up its children's sessions — and tolerates `~`, relative paths, symlinks (macOS `/tmp` → `/private/tmp`), and case-insensitive filesystems. A directory with no sessions is an empty result, not an error.
 
@@ -111,7 +111,7 @@ What that pins down, for anyone changing this code:
 
 ### Browser UI (`webui`)
 
-`asbutler webui` starts a local HTTP server, opens it in your default browser (skip with `--no-open`), and serves a self-contained two-pane master-detail view. A resizable sidebar (drag its right edge; the width is remembered) lists every working directory with a fixed header of agent-filter chips and a directory search; Hermes groups are labelled with their profile (`name <profile>`). Selecting a directory shows its sessions in a sortable table (Title / Agent / Messages / Size / Modified / Session ID; hover a session id to see it in full, click to copy). The agent chips toggle which agents are shown — like the CLI's `--agent`, all discovered agents are on by default. A persistent summary strip at the top of the detail pane carries a disk-usage bar split per agent plus an orphaned segment, each with its size and share of the total. Message counts and titles resolve on demand when a directory is opened. Rows are multi-selectable (Select all) for batch delete, and single or batch deletes go behind a confirmation dialog; sessions held by a running agent are lock-protected. A dark/bright theme toggle is remembered across visits and defaults to the system preference. The frontend (a small Alpine.js app) and its assets are embedded into the binary via `go:embed`, so it needs no network access and ships as a single file. Same core as the CLI — nothing new touches session parsing or deletion.
+`asbutler webui` starts a local HTTP server, opens it in your default browser (skip with `--no-open`), and serves a self-contained two-pane master-detail view. A resizable sidebar (drag its right edge; the width is remembered) lists every working directory with a fixed header of agent-filter chips and a directory search; Hermes groups are labelled with their profile (`name <profile>`). Selecting a directory shows its sessions in a sortable table (Title / Agent / Messages / Size / Modified / Session ID; hover a session id to see it in full, click to copy). The agent chips toggle which agents are shown — like the CLI's `--agent`, all discovered agents are on by default. A persistent summary strip at the top of the detail pane carries a disk-usage bar split per agent plus an orphaned segment, each with its size and share of the total. Message counts and titles resolve on demand when a directory is opened. Rows are multi-selectable (Select all) for batch delete and batch move/copy, both behind a confirmation dialog; sessions held by a running agent are lock-protected. The batch move button counts only the sessions that can actually be relocated and says how many it skipped. A dark/bright theme toggle is remembered across visits and defaults to the system preference. The frontend (a small Alpine.js app) and its assets are embedded into the binary via `go:embed`, so it needs no network access and ships as a single file. Same core as the CLI — nothing new touches session parsing or deletion.
 
 ## Project layout
 
