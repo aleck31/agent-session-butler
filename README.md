@@ -2,7 +2,7 @@
 
 **Cross-platform chat-session manager for your AI coding agents.**
 
-Agent Session Butler auto-discovers the AI coding agents installed on your machine (Kiro, Claude Code, …), groups their chat sessions by working directory, and lets you browse, sort, and clean them up — reclaiming disk space and keeping your session history tidy.
+Agent Session Butler auto-discovers the AI coding agents installed on your machine (Kiro, Claude Code, Codex, Hermes), groups their chat sessions by working directory, and lets you browse, sort, and clean them up — reclaiming disk space and keeping your session history tidy.
 
 A single static Go binary. Runs on Linux, macOS, and Windows. Provides a terminal CLI and a local `webui` mode with a browser UI.
 
@@ -14,8 +14,8 @@ A single static Go binary. Runs on Linux, macOS, and Windows. Provides a termina
 - **Grouped by working directory** — every `cwd` you've used an agent in, sorted by most recent activity, with per-directory session count and size.
 - **Orphan detection** — directories that no longer exist (project deleted, sessions linger) are flagged `[missing]` — prime cleanup candidates.
 - **Lazy enrichment** — message count and titles are computed on demand, so a bare listing stays instant even with tens of MB of `.jsonl`.
-- **Move / copy sessions** — re-home a session to a new working directory when a repo moves (`~/ideas/foo` → `~/repos/foo`), so the agent can resume it at the new path. Move or copy, via CLI or the web UI. (Not supported for Hermes, whose home is its profile.)
-- **Lock-aware** — sessions held by a **running** agent are lock-detected (live PID check) and protected from deletion or relocation.
+- **Move / copy sessions** — re-home a session to a new working directory when a repo moves (`~/ideas/foo` → `~/repos/foo`), so the agent can resume it at the new path. Move or copy, via CLI or the web UI. (Not supported for Hermes or Codex, whose cwd lives somewhere this tool only reads.)
+- **Lock-aware** — where the agent exposes a lock, sessions held by a **running** agent are detected (live PID check) and protected from deletion or relocation. Codex exposes none, so its deletion safety is delegated to `codex delete`.
 
 ### Supported agents
 
@@ -23,9 +23,14 @@ A single static Go binary. Runs on Linux, macOS, and Windows. Provides a termina
 |-------|-----------------|
 | Kiro | files under `~/.kiro/sessions/cli/` |
 | Claude Code | `~/.claude/projects/<encoded-cwd>/*.jsonl` |
+| Codex | rollout `.jsonl` files indexed by `threads` in `$CODEX_HOME/state_<n>.sqlite` (default `~/.codex`) |
 | Hermes | SQLite `state.db` per profile under `$HERMES_HOME` (default `~/.hermes`) |
 
 Most agents keep sessions as files; **Hermes** stores them as rows in a per-profile SQLite database. The tool opens each `state.db` read-only (respecting the gateway's WAL writes) and never writes to it — deletion goes through `hermes sessions delete`, which also clears the FTS index. Only interactive CLI sessions are shown (`source = cli`); channel, cron, and imported sessions have no meaningful working directory and are skipped, keeping Hermes in the same "sessions you ran in a directory" scope as Kiro and Claude Code. Since a DB-backed session has no file size, its size is the total byte length of its message content. Sessions are grouped by profile as well as cwd — the same directory under different Hermes profiles forms distinct groups, labelled `name <profile>` (the root database is the `default` profile). A Hermes session is lock-protected only when its profile's gateway is running and that session is the one the gateway currently holds.
+
+**Codex** is a hybrid: conversation content lives in per-session rollout files (`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`) while an index of every session lives in the `threads` table of `$CODEX_HOME/state_<n>.sqlite`. The index is authoritative — Codex is migrating off the files, as its own `migrate-rollouts` command implies — so scanning reads only the DB (read-only, one indexed query, no file reads) and a rollout is opened only to count messages. Deletion shells out to `codex delete`, because removing a rollout file directly would leave a dangling `threads` row that Codex's session picker would list as a session whose content is gone. The `_<n>` suffix is a schema version Codex bumps, so the newest `state_<n>.sqlite` is selected rather than a fixed name.
+
+Every Codex session is listed, including the subagent threads Codex spawns for itself (guardian reviews, spawned children). Unlike Hermes' out-of-scope sessions, these carry a real working directory and real bytes, and Codex has no retention policy that ever reclaims them — on the dev machine they were 31% of Codex's disk use, so hiding them would hide exactly the garbage this tool exists to surface. Two consequences of how Codex stores things: sessions have no per-session lock (only a global zero-byte coordination file with no PID), so none are reported as locked and `codex delete` is left to refuse a live session; and relocation is unsupported, since `cwd` sits in the read-only index as well as the rollout file with no CLI to change it. A session still open in the desktop app is invisible until Codex flushes it to the index — the `codex` CLI can't see it either.
 
 Agent Session Butler only touches sessions when you ask: it deletes on request, and moves/copies a session's working-directory association on request (rewriting just the cwd, and for a copy a fresh id). It never alters conversation content.
 
@@ -74,7 +79,7 @@ asbutler version              # print the version
 asbutler help
 ```
 
-Output is JSON by default (for agents); `-H`/`--human` gives readable text. `-a` / `--agent` matches the agent name by case-insensitive substring, so `-a claude` selects "Claude Code". `-o` / `--orphans` keeps only groups whose working directory no longer exists. `mv` / `cp` re-home a session so a relocated repo's session resumes at the new path (Hermes excluded).
+Output is JSON by default (for agents); `-H`/`--human` gives readable text. `-a` / `--agent` matches the agent name by case-insensitive substring, so `-a claude` selects "Claude Code". `-o` / `--orphans` keeps only groups whose working directory no longer exists. `mv` / `cp` re-home a session so a relocated repo's session resumes at the new path (Hermes and Codex excluded).
 
 `list` is scoped to one directory by default because listing is only cheap when it is: the JSON path enriches every session it returns (reading each file to count messages), so a machine-wide `--all` over ~1.5 GiB of history takes ~35s where a single directory takes ~2s. `--path` narrows *before* enrichment. Matching is on the exact directory — a parent does not pick up its children's sessions — and tolerates `~`, relative paths, symlinks (macOS `/tmp` → `/private/tmp`), and case-insensitive filesystems. A directory with no sessions is an empty result, not an error.
 
@@ -107,6 +112,7 @@ internal/agent/
   agent.go                    Agent interface, Session, streaming jsonl reader
   kiro.go                     KiroAgent (.json + .jsonl bundle)
   claude.go                   ClaudeCodeAgent (.jsonl; cwd read from contents)
+  codex.go                    CodexAgent (SQLite thread index + rollout files; delete via CLI)
   hermes.go                   HermesAgent (per-profile SQLite; delete via CLI)
   lock_unix.go                live-PID lock check (syscall.Kill)
   lock_windows.go             live-PID lock check (OpenProcess)
@@ -122,7 +128,7 @@ internal/server/
 
 Only the process-lock check is platform-specific (build-tag split); everything else is shared.
 
-Tests live beside the code (`go test ./...`). They run against sandboxed `HOME` / `HERMES_HOME` temp dirs and never touch real session data. The invariants they pin are the ones that were established empirically and are easy to break by accident: Claude's lossy project-dir encoding (cwd must come from file contents), the move-rewrites-both-dir-and-in-file-cwd rule, Hermes' cli-only scope and read-only access, the `(profile, cwd)` grouping key, stale-lock detection, the mtime cache, and the agent-facing JSON contract below.
+Tests live beside the code (`go test ./...`). They run against sandboxed `HOME` / `HERMES_HOME` temp dirs and never touch real session data. The invariants they pin are the ones that were established empirically and are easy to break by accident: Claude's lossy project-dir encoding (cwd must come from file contents), the move-rewrites-both-dir-and-in-file-cwd rule, Hermes' cli-only scope and read-only access, Codex's schema-versioned state DB and turn-counting rules, the `(profile, cwd)` grouping key, stale-lock detection, the mtime cache, and the agent-facing JSON contract below.
 
 ## License
 
