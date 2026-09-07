@@ -164,6 +164,11 @@
   th.num { text-align: right; } /* numeric headers align with their right-aligned data */
   td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
   td.title { max-width: 420px; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
+  /* Only hint at editability on hover: a permanent affordance on every row would
+     be noise, since renaming is occasional. */
+  .titletext.editable:hover { text-decoration: underline dotted; cursor: text; }
+  .titleedit { width: 100%; font: inherit; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--accent); border-radius: 4px; padding: 1px 5px; }
   td.id, td.agent { color: var(--muted); }
   /* Session id doubles as a copy button: looks like the id text, flashes on copy. */
   .idcopy { font: inherit; color: var(--muted); background: none; border: none; padding: 0; cursor: pointer; }
@@ -177,6 +182,10 @@
   .placeholder, .loading { color: var(--muted); text-align: center; padding: 64px 20px; }
 
   /* ── Confirm dialog ──────────────────────────────────────────────────── */
+  .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 60;
+    max-width: 70vw; padding: 9px 14px; border-radius: 6px; cursor: pointer;
+    background: var(--danger-bg, #7f1d1d); color: #fff; font-size: 13px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.28); }
   .scrim { position: fixed; inset: 0; background: rgba(6,9,13,.6); display: grid; place-items: center; padding: 20px; }
   .dialog { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 24px; max-width: 460px; width: 100%; }
   .dialog h2 { margin: 0 0 8px; font-family: system-ui, sans-serif; font-size: 17px; }
@@ -330,8 +339,17 @@
                 <template x-for="s in sortedSessions()" :key="s.id">
                   <tr :class="{ sel: selectedIds.has(s.id) }">
                     <td><input type="checkbox" class="ck" :checked="selectedIds.has(s.id)" :disabled="s.locked" @change="toggleRow(s)"></td>
-                    <td class="title" :title="s.title">
-                      <svg class="icon lock" x-show="s.locked" title="Held by a running agent"><use href="#i-lock"/></svg> <span x-text="s.title"></span>
+                    <td class="title" :title="s.locked ? s.title : s.title + '\n(click to rename)'">
+                      <svg class="icon lock" x-show="s.locked" title="Held by a running agent"><use href="#i-lock"/></svg>
+                      <template x-if="editing !== s.id">
+                        <span class="titletext" :class="{ editable: !s.locked }"
+                              @click="!s.locked && startEdit(s)" x-text="s.title"></span>
+                      </template>
+                      <template x-if="editing === s.id">
+                        <input class="titleedit" type="text" x-model="editTitle"
+                               @keydown.enter="commitEdit(s)" @keydown.escape="cancelEdit()"
+                               @blur="commitEdit(s)" x-init="$el.focus(); $el.select()">
+                      </template>
                     </td>
                     <td class="agent c-agent" x-text="s.agent"></td>
                     <td class="num" x-text="s.messageCount != null ? s.messageCount + ' msgs' : '·'"></td>
@@ -356,6 +374,11 @@
       </template>
     </main>
   </div>
+
+  <!-- Transient error banner, for actions that have no dialog to report into -->
+  <template x-if="toast">
+    <div class="toast" @click="toast=''" x-text="toast" title="Click to dismiss"></div>
+  </template>
 
   <!-- Confirm delete (single or batch) -->
   <template x-if="pending">
@@ -405,6 +428,7 @@ function butler() {
     summary: null, loading: false, dirQuery: '',
     selectedKey: null, enriched: {},
     selectedIds: new Set(),
+    toast: '',        // transient error text, for actions with no dialog of their own
     sort: { key: 'modifiedAt', dir: 'desc' },
     pending: null, deleting: false, delError: '',
     reloc: null, relocating: false, relocError: '',
@@ -607,6 +631,38 @@ function butler() {
     askDeleteOne(s) {
       this.delError = '';
       this.pending = { ids: [s.id], label: s.title + '  (' + s.agent + ' · ' + s.sizeHuman + ')' };
+    },
+
+    // Inline title editing. Titles come from a session's first prompt, so several
+    // sessions in one directory often read identically; a name the user chose is
+    // the only thing that actually distinguishes them.
+    editing: null,   // id of the row being edited
+    editTitle: '',
+    startEdit(s) {
+      this.editing = s.id;
+      this.editTitle = s.title;
+    },
+    cancelEdit() { this.editing = null; this.editTitle = ''; },
+    async commitEdit(s) {
+      if (this.editing !== s.id) return; // already committed or cancelled
+      const title = this.editTitle.trim();
+      this.editing = null;
+      if (!title || title === s.title) return; // nothing to do
+      try {
+        const r = await fetch('/api/session/' + encodeURIComponent(s.id) + '/rename', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title }),
+        });
+        if (r.ok) {
+          const b = await r.json().catch(() => ({}));
+          s.title = b.title || title; // patch in place; a rescan would lose the scroll
+        } else {
+          const b = await r.json().catch(() => ({}));
+          this.toast = b.error || ('Rename failed (' + r.status + ').');
+        }
+      } catch (_) {
+        this.toast = 'Network error — is the server still running?';
+      }
     },
 
     // dirPath prefixes a left-to-right mark so the path renders correctly inside

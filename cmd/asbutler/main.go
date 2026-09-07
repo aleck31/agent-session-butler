@@ -30,7 +30,7 @@ func writeJSON(v any) {
 }
 
 // version is the release version, printed by `asbutler version`.
-const version = "0.7.2"
+const version = "0.7.3"
 
 func main() {
 	args := os.Args[1:]
@@ -49,6 +49,8 @@ func main() {
 		cmdRelocate(args, false)
 	case "cp", "copy":
 		cmdRelocate(args, true)
+	case "rename", "title":
+		cmdRename(args)
 	case "webui":
 		cmdWebUI(args)
 	case "version", "--version":
@@ -77,6 +79,7 @@ Usage:
   asbutler rm <id>...           Delete sessions by id; prints JSON results (-H for text)
   asbutler mv <id>... <new-cwd> Move sessions to a new working directory
   asbutler cp <id>... <new-cwd> Copy sessions to a new working directory (fresh ids)
+  asbutler rename <id> <title>  Set a session's title, in the agent's own metadata
   asbutler webui [--addr host:port] [--no-open]  Open the local browser UI (default 127.0.0.1:7788)
   asbutler version              Print the version
   asbutler help                 Show this help
@@ -447,6 +450,54 @@ func cmdRelocate(args []string, asCopy bool) {
 		writeJSON(results)
 	}
 	if anyFail {
+		os.Exit(1)
+	}
+}
+
+// renameResult is the JSON output of rename.
+type renameResult struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Error string `json:"error,omitempty"`
+}
+
+// cmdRename handles `rename <id> <title>`. One session at a time on purpose:
+// giving several sessions the same title would recreate the ambiguity renaming
+// exists to remove.
+func cmdRename(args []string) {
+	human := false
+	var pos []string
+	for _, a := range args {
+		if a == "-H" || a == "--human" {
+			human = true
+		} else {
+			pos = append(pos, a)
+		}
+	}
+	// Accept an unquoted multi-word title, as `hermes sessions rename` does.
+	if len(pos) < 2 {
+		fmt.Fprintln(os.Stderr, "rename: usage: asbutler rename <session-id> <title>")
+		os.Exit(2)
+	}
+	id, title := pos[0], strings.Join(pos[1:], " ")
+
+	written, err := store.New().RenameByID(id, title)
+	res := renameResult{ID: id, Title: written}
+	if err != nil {
+		res.Title = title
+		res.Error = err.Error()
+	}
+
+	if human {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "✗ %s: %s\n", id, err)
+		} else {
+			fmt.Printf("✓ renamed %s → %q\n", id, written)
+		}
+	} else {
+		writeJSON(res)
+	}
+	if err != nil {
 		os.Exit(1)
 	}
 }
