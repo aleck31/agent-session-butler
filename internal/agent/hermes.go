@@ -110,8 +110,8 @@ func (a HermesAgent) scanDB(db dbEntry) []Session {
 	}
 	defer conn.Close()
 
-	active := activeSessionIDs(conn, db) // ids the running gateway holds → locked
-	bytesByID := contentBytes(conn)      // session_id → total message content bytes
+	active := activeSessionIDs(conn, db)       // ids the running gateway holds → locked
+	bytesByID, turnsByID := messageStats(conn) // per session: content bytes, conversation turns
 
 	// Only interactive CLI sessions — same scope as Kiro/Claude Code. Channel/
 	// cron/imported sessions have no meaningful cwd and would flood the listing.
@@ -140,14 +140,19 @@ func (a HermesAgent) scanDB(db dbEntry) []Session {
 		if ts == 0 { // ended_at missing/zero → session never formally ended
 			ts = startedAt.Float64
 		}
-		mc := int(msgCount.Int64)
+		// Not sessions.message_count: that column is the raw row count of the
+		// messages table, a third of which is tool traffic on a real store (554 of
+		// 1,663 rows; one session reported 43 against 16 actual turns). The other
+		// three agents count conversation turns, so counting rows here would make
+		// Hermes the only agent whose number answers a different question.
+		mc := turnsByID[id]
 
 		out = append(out, Session{
 			ID:           id,
 			Agent:        a.Name(),
 			Cwd:          c,
 			Title:        hermesTitle(title.String, id),
-			MessageCount: &mc, // sessions.message_count is authoritative; no Enrich needed
+			MessageCount: &mc, // known at scan time; Enrich has nothing to add
 			// DB-backed: no file size. Use total message-content bytes (near-
 			// complete coverage, unlike the sparse token columns); 0 if none.
 			FileSize:   bytesByID[id],
@@ -160,23 +165,29 @@ func (a HermesAgent) scanDB(db dbEntry) []Session {
 	return out
 }
 
-// contentBytes returns, per session id, the total byte length of its message
-// content — computed in one grouped pass over the messages table.
-func contentBytes(conn *sql.DB) map[string]int64 {
-	rows, err := conn.Query(`SELECT session_id, sum(length(content)) FROM messages GROUP BY session_id`)
+// messageStats returns, per session id, the total byte length of its message
+// content and its conversation-turn count — one grouped pass over the messages
+// table, since both were being derived from it anyway.
+//
+// Turns are user and assistant rows only. `role='tool'` is excluded to match the
+// other three agents: tool traffic is protocol, not conversation.
+func messageStats(conn *sql.DB) (bytesByID map[string]int64, turnsByID map[string]int) {
+	rows, err := conn.Query(`SELECT session_id, sum(length(content)),
+		sum(role IN ('user','assistant')) FROM messages GROUP BY session_id`)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	defer rows.Close()
-	out := map[string]int64{}
+	bytesByID, turnsByID = map[string]int64{}, map[string]int{}
 	for rows.Next() {
 		var id string
-		var n sql.NullInt64
-		if rows.Scan(&id, &n) == nil {
-			out[id] = n.Int64
+		var size, turns sql.NullInt64
+		if rows.Scan(&id, &size, &turns) == nil {
+			bytesByID[id] = size.Int64
+			turnsByID[id] = int(turns.Int64)
 		}
 	}
-	return out
+	return bytesByID, turnsByID
 }
 
 // Enrich is a no-op for Hermes: title and message_count come straight from the

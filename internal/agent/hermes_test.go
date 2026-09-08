@@ -20,7 +20,8 @@ type hermesRow struct {
 	msgCount  int
 	startedAt float64
 	endedAt   float64
-	contents  []string // message bodies; their byte length becomes the session size
+	contents  []string // user/assistant message bodies — these are the turns
+	toolRows  []string // role='tool' bodies: they add to the size but are not turns
 }
 
 // newHermesDB creates a state.db at path with Hermes' relevant schema and rows.
@@ -40,7 +41,7 @@ func newHermesDB(t *testing.T, path string, rows []hermesRow, routing []string) 
 	for _, stmt := range []string{
 		`CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, title TEXT, cwd TEXT,
 			message_count INTEGER, started_at REAL, ended_at REAL, archived INTEGER)`,
-		`CREATE TABLE messages (session_id TEXT, content TEXT)`,
+		`CREATE TABLE messages (session_id TEXT, role TEXT, content TEXT)`,
 		`CREATE TABLE gateway_routing (entry_json TEXT)`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
@@ -54,8 +55,18 @@ func newHermesDB(t *testing.T, path string, rows []hermesRow, routing []string) 
 			r.id, r.source, r.title, r.cwd, r.msgCount, r.startedAt, r.endedAt); err != nil {
 			t.Fatal(err)
 		}
-		for _, c := range r.contents {
-			if _, err := db.Exec(`INSERT INTO messages (session_id, content) VALUES (?,?)`, r.id, c); err != nil {
+		// Alternate user/assistant so a turn count is meaningful.
+		for i, c := range r.contents {
+			role := "user"
+			if i%2 == 1 {
+				role = "assistant"
+			}
+			if _, err := db.Exec(`INSERT INTO messages (session_id, role, content) VALUES (?,?,?)`, r.id, role, c); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, c := range r.toolRows {
+			if _, err := db.Exec(`INSERT INTO messages (session_id, role, content) VALUES (?,'tool',?)`, r.id, c); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -297,18 +308,61 @@ func TestHermesHomeEnvOverridesDefault(t *testing.T) {
 	}
 }
 
-// message_count comes straight off the sessions row, so Enrich has nothing to do.
-func TestHermesEnrichIsANoOpAndCountIsSetAtScan(t *testing.T) {
+// Turns are counted from the messages table, not from sessions.message_count:
+// that column is the raw row count and includes tool traffic, which would make
+// Hermes the only agent whose number answers a different question.
+func TestHermesCountsTurnsNotRawMessageRows(t *testing.T) {
 	home := hermesSandbox(t)
-	newHermesDB(t, filepath.Join(home, "state.db"),
-		[]hermesRow{{id: "a", source: "cli", cwd: "/x", msgCount: 7, startedAt: 1}}, nil)
+	newHermesDB(t, filepath.Join(home, "state.db"), []hermesRow{
+		{id: "a", source: "cli", cwd: "/x", startedAt: 1,
+			// message_count claims 9, matching the raw row count (4 + 5).
+			msgCount: 9,
+			contents: []string{"q1", "a1", "q2", "a2"},
+			toolRows: []string{"t1", "t2", "t3", "t4", "t5"}},
+	}, nil)
 
 	s := (HermesAgent{}).Scan()[0]
-	if s.MessageCount == nil || *s.MessageCount != 7 {
-		t.Fatalf("messageCount at scan: got %v, want 7", s.MessageCount)
+	if s.MessageCount == nil || *s.MessageCount != 4 {
+		t.Errorf("messageCount: got %v, want 4 turns (the 5 tool rows do not count)", s.MessageCount)
 	}
-	if got := (HermesAgent{}).Enrich(s); got.MessageCount == nil || *got.MessageCount != 7 || got.Title != s.Title {
-		t.Errorf("Enrich changed the session: %+v vs %+v", got, s)
+	// Size still covers every row, tool traffic included — it is disk usage, not
+	// conversation length.
+	if want := int64(len("q1a1q2a2t1t2t3t4t5")); s.FileSize != want {
+		t.Errorf("fileSize: got %d, want %d (all rows)", s.FileSize, want)
+	}
+}
+
+// A session with only tool rows is zero turns, not zero-length.
+func TestHermesToolOnlySessionHasNoTurns(t *testing.T) {
+	home := hermesSandbox(t)
+	newHermesDB(t, filepath.Join(home, "state.db"), []hermesRow{
+		{id: "a", source: "cli", cwd: "/x", startedAt: 1, msgCount: 3,
+			toolRows: []string{"t1", "t2", "t3"}},
+	}, nil)
+
+	s := (HermesAgent{}).Scan()[0]
+	if s.MessageCount == nil || *s.MessageCount != 0 {
+		t.Errorf("messageCount: got %v, want 0", s.MessageCount)
+	}
+	if s.FileSize == 0 {
+		t.Error("fileSize: got 0, want the tool rows' bytes")
+	}
+}
+
+// Enrich has nothing to add: both fields are known at scan time.
+func TestHermesEnrichIsANoOp(t *testing.T) {
+	home := hermesSandbox(t)
+	newHermesDB(t, filepath.Join(home, "state.db"),
+		[]hermesRow{{id: "a", source: "cli", cwd: "/x", startedAt: 1,
+			contents: []string{"q", "a"}}}, nil)
+
+	s := (HermesAgent{}).Scan()[0]
+	if s.MessageCount == nil || *s.MessageCount != 2 {
+		t.Fatalf("messageCount at scan: got %v, want 2", s.MessageCount)
+	}
+	got := (HermesAgent{}).Enrich(s)
+	if got.MessageCount == nil || *got.MessageCount != 2 || got.Title != s.Title {
+		t.Errorf("Enrich changed the session")
 	}
 }
 
