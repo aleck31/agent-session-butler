@@ -162,6 +162,7 @@ What that pins down, for anyone changing this code:
 - **The `{summary, sessions[]}` shape and those key names.** Renaming or removing one breaks the consumer's sidebar. `internal/view/view_test.go` asserts the exact key set, so such a change fails the test rather than shipping silently — when you do mean it, update the test, bump the version, and tell the consumer.
 - **`--path` must narrow *before* enrichment.** This is the whole point of ADR-0002 D2. Moving the filter after enrichment would take an interactive query from ~1s back to ~36s on a real machine, which is a performance regression the consumer feels directly.
 - **`asbutler list` must keep defaulting to JSON** (since 0.5.4) and `--path` must keep its exact-directory, non-recursive semantics.
+- **A consumer spawned from a GUI does not inherit a shell's `PATH`.** Mutations delegate to each agent's own CLI, so those binaries are resolved from the usual install locations (`~/.local/bin`, `~/.toolbox/bin`, Homebrew, …) and not from `PATH` alone — that is what made a delete from an editor plugin fail with `executable file not found in $PATH`. Each delegated call is also bounded at 60s, so a hung agent CLI surfaces as an error instead of a spinner that never stops.
 - Minimum version required by the consumer: **0.6.1**.
 
 ### Browser UI (`webui`)

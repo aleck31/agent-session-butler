@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -204,9 +203,9 @@ func (HermesAgent) Delete(s Session) error {
 	if p := s.Extra["profile"]; p != "" && p != "default" {
 		args = append(args, "-p", p)
 	}
-	cmd := exec.Command("hermes", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		msg := strings.TrimSpace(string(out))
+	out, err := runTool("hermes", args...)
+	if err != nil {
+		msg := strings.TrimSpace(out)
 		if msg == "" {
 			msg = err.Error()
 		}
@@ -233,9 +232,8 @@ func (HermesAgent) Rename(s Session, title string) error {
 	if p := s.Extra["profile"]; p != "" && p != "default" {
 		args = append(args, "-p", p)
 	}
-	cmd := exec.Command("hermes", args...)
-	out, err := cmd.CombinedOutput()
-	msg := strings.TrimSpace(string(out))
+	out, err := runTool("hermes", args...)
+	msg := strings.TrimSpace(out)
 	if err != nil {
 		if msg == "" {
 			msg = err.Error()

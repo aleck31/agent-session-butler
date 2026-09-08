@@ -235,9 +235,9 @@ func codexIsInjected(content []struct {
 // file and its `threads` row. Removing the file ourselves would leave the index
 // pointing at nothing.
 func (CodexAgent) Delete(s Session) error {
-	cmd := exec.Command("codex", "delete", s.ID)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		msg := strings.TrimSpace(string(out))
+	out, err := runTool("codex", "delete", s.ID)
+	if err != nil {
+		msg := strings.TrimSpace(out)
 		if msg == "" {
 			msg = err.Error()
 		}
@@ -269,7 +269,11 @@ func codexSetThreadName(threadID, title string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "codex", "app-server")
+	codexBin, err := toolPath("codex")
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, codexBin, "app-server")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err

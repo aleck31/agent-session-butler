@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -317,9 +316,9 @@ func kiroV1Time(ts string) string {
 // so a v2 copy under the same id survives. Writing the database directly is out:
 // it is Kiro's, and the same reasoning applies as for Hermes (ADR-0001 D3).
 func (KiroAgent) deleteV1(s Session) error {
-	cmd := exec.Command("kiro-cli", "chat", "--delete-session", s.ID, "--session-source", kiroStoreV1)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		msg := strings.TrimSpace(string(out))
+	out, err := runTool("kiro-cli", "chat", "--delete-session", s.ID, "--session-source", kiroStoreV1)
+	if err != nil {
+		msg := strings.TrimSpace(out)
 		if msg == "" {
 			msg = err.Error()
 		}
