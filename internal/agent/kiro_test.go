@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -374,5 +375,68 @@ func TestKiroRenameWritesTheJSONAndKeepsOtherFields(t *testing.T) {
 	}
 	if got := (KiroAgent{}).Scan()[0].Title; got != "搬仓到内网 gitlab" {
 		t.Errorf("scan still reports %q", got)
+	}
+}
+
+// countingReader records how many bytes were actually pulled from the source.
+type countingReader struct {
+	r io.Reader
+	n int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += n
+	return n, err
+}
+
+// The 17.7x speedup in Kiro's scan (494ms → 27.9ms) comes from stopping the
+// decode once cwd and title are in hand, instead of reading the whole .json —
+// which carries `session_state`, the entire conversation, averaging 274 KB and
+// reaching 2.7 MB in real data.
+//
+// This asserts bytes consumed rather than elapsed time: timing is flaky, and the
+// property that matters is "does not read the big value", not "is fast today". If
+// Kiro ever emits session_state before cwd/title, correctness holds but the
+// speedup is silently lost — this is what would notice.
+func TestKiroDecodeMetaStopsBeforeTheConversation(t *testing.T) {
+	bulk := strings.Repeat("x", 400_000)
+	doc := `{"session_id":"sid1","cwd":"/home/u/proj","title":"a title",` +
+		`"created_at":"2026-01-01","session_state":{"blob":"` + bulk + `"}}`
+
+	cr := &countingReader{r: strings.NewReader(doc)}
+	meta, ok := kiroDecodeMeta(cr)
+	if !ok {
+		t.Fatal("decode failed")
+	}
+	if meta.cwd != "/home/u/proj" || meta.title == nil || *meta.title != "a title" {
+		t.Fatalf("wrong metadata: cwd=%q title=%v", meta.cwd, meta.title)
+	}
+
+	// The decoder buffers, so this is not a byte-exact bound — but reading a small
+	// multiple of the buffer instead of 400 KB is the difference being asserted.
+	const generousLimit = 64 * 1024
+	if cr.n > generousLimit {
+		t.Errorf("read %d bytes of a %d-byte document; expected to stop early (limit %d).\n"+
+			"Kiro may have changed its key order so session_state now precedes cwd/title — "+
+			"still correct, but the scan speedup is gone.", cr.n, len(doc), generousLimit)
+	}
+	t.Logf("read %d of %d bytes (%.1f%%)", cr.n, len(doc), 100*float64(cr.n)/float64(len(doc)))
+}
+
+// The reverse layout: correctness must survive it even though speed does not.
+func TestKiroDecodeMetaStillCorrectWhenBulkComesFirst(t *testing.T) {
+	bulk := strings.Repeat("y", 50_000)
+	doc := `{"session_state":{"blob":"` + bulk + `"},"cwd":"/late/cwd","title":"late title"}`
+
+	meta, ok := kiroDecodeMeta(strings.NewReader(doc))
+	if !ok {
+		t.Fatal("decode failed")
+	}
+	if meta.cwd != "/late/cwd" {
+		t.Errorf("cwd: got %q, want /late/cwd", meta.cwd)
+	}
+	if meta.title == nil || *meta.title != "late title" {
+		t.Errorf("title: got %v", meta.title)
 	}
 }

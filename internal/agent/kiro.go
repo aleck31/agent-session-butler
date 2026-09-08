@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,8 +143,14 @@ func kiroReadMeta(path string) (kiroMeta, bool) {
 		return kiroMeta{}, false
 	}
 	defer f.Close()
+	return kiroDecodeMeta(f)
+}
 
-	dec := json.NewDecoder(f)
+// kiroDecodeMeta is kiroReadMeta over any reader, so a test can measure how much
+// of the input is actually consumed — which is the property the speedup rests on,
+// and the only way to assert it without timing something flaky.
+func kiroDecodeMeta(r io.Reader) (kiroMeta, bool) {
+	dec := json.NewDecoder(r)
 	// Opening brace; anything else means this is not a session object.
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
 		return kiroMeta{}, false
