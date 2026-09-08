@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -35,15 +36,23 @@ func kiroSessionsDir() string {
 }
 
 func (KiroAgent) Installed() bool {
-	dir := kiroSessionsDir()
-	if dir == "" {
-		return false
+	if dir := kiroSessionsDir(); dir != "" {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return true
+		}
 	}
-	info, err := os.Stat(dir)
-	return err == nil && info.IsDir()
+	// A machine that only ever used the old store still has Kiro sessions.
+	return fileExists(kiroDBPath())
 }
 
+// Scan covers both of Kiro's stores. The same id can appear in each — opening a
+// v1 session copies it to v2 and leaves the original — so rows carry a Store and
+// are not merged (ADR-0006).
 func (a KiroAgent) Scan() []Session {
+	return append(a.scanV2(), a.scanV1()...)
+}
+
+func (a KiroAgent) scanV2() []Session {
 	dir := kiroSessionsDir()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -119,6 +128,7 @@ func (a KiroAgent) parse(sid string, paths []string) (Session, bool) {
 		FileSize:     totalSize,
 		ModifiedAt:   newest,
 		Locked:       locked,
+		Store:        kiroStoreV2,
 		CacheKey:     jsonPath,
 		FilePaths:    paths,
 	}, true
@@ -196,11 +206,21 @@ func kiroDecodeMeta(r io.Reader) (kiroMeta, bool) {
 
 // Delete removes the session's file bundle. Kiro sessions are plain files with
 // no shadow index, so removing them directly is safe.
-func (KiroAgent) Delete(s Session) error { return deleteFiles(s) }
+func (a KiroAgent) Delete(s Session) error {
+	if s.Store == kiroStoreV1 {
+		return a.deleteV1(s)
+	}
+	return deleteFiles(s)
+}
 
 // Relocate re-homes a Kiro session to newCwd. Move rewrites the .json's cwd in
 // place; copy duplicates the whole bundle under a fresh session id first.
 func (KiroAgent) Relocate(s Session, newCwd string, asCopy bool) (string, error) {
+	// v1 keys a conversation by cwd inside Kiro's own database; re-homing it would
+	// mean writing that database, which is Kiro's to write.
+	if s.Store == kiroStoreV1 {
+		return "", fmt.Errorf("%w: not for Kiro's v1 store", ErrRelocateUnsupported)
+	}
 	jsonPath := s.CacheKey // Kiro's CacheKey is the .json path
 	sid := s.ID
 	if asCopy {
@@ -232,6 +252,12 @@ func kiroSetJSON(jsonPath, sid, cwd string) error {
 // Rename writes the new title into the session's .json, which is where Kiro
 // reads it from — so Kiro's own listing shows it too.
 func (KiroAgent) Rename(s Session, title string) error {
+	// v1 has no title field: Kiro derives the label from the first user message, so
+	// renaming would mean rewriting what the person typed. This tool changes a cwd
+	// association and a title, never conversation content.
+	if s.Store == kiroStoreV1 {
+		return fmt.Errorf("%w: Kiro's v1 store has no title field — it shows the first message", ErrRenameUnsupported)
+	}
 	return kiroPatchJSON(s.CacheKey, map[string]any{"title": title}) // CacheKey is the .json path
 }
 
@@ -262,6 +288,9 @@ func kiroPatchJSON(jsonPath string, fields map[string]any) error {
 // (user) and AssistantMessage events. Tool results and compaction events are
 // excluded — they aren't conversation messages.
 func (a KiroAgent) Enrich(s Session) Session {
+	if s.Store == kiroStoreV1 {
+		return a.enrichV1(s)
+	}
 	var jsonlPath string
 	for _, p := range s.FilePaths {
 		if filepath.Ext(p) == ".jsonl" {
@@ -358,6 +387,9 @@ func cleanTitle(raw *string, sid string) string {
 // Transcript reads Kiro's .jsonl event stream. Kiro records no per-message
 // timestamp, so Turn.At is always nil; a Prompt event is always real user input.
 func (a KiroAgent) Transcript(s Session, opts TranscriptOptions) ([]Turn, error) {
+	if s.Store == kiroStoreV1 {
+		return a.transcriptV1(s, opts)
+	}
 	var jsonl string
 	for _, p := range s.FilePaths {
 		if filepath.Ext(p) == ".jsonl" {

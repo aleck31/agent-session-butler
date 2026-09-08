@@ -15,11 +15,15 @@ import (
 // so a flat list needs no back-reference to a group. Both byte and human sizes
 // and an RFC3339 timestamp are provided so callers don't reparse.
 type Session struct {
-	ID           string    `json:"id"`
-	Agent        string    `json:"agent"`
-	Cwd          string    `json:"cwd"`
-	Profile      string    `json:"profile"` // "" for agents without profiles (Kiro/Claude)
-	Orphan       bool      `json:"orphan"`  // working directory no longer exists
+	ID      string `json:"id"`
+	Agent   string `json:"agent"`
+	Cwd     string `json:"cwd"`
+	Profile string `json:"profile"` // "" for agents without profiles (Kiro/Claude)
+	// Store distinguishes rows that share an id because the agent keeps several
+	// stores; "" when it keeps one. Not part of the grouping key: a directory's v1
+	// and v2 sessions belong side by side, which is how you spot a stale duplicate.
+	Store        string    `json:"store"`
+	Orphan       bool      `json:"orphan"` // working directory no longer exists
 	Title        string    `json:"title"`
 	MessageCount *int      `json:"messageCount"`
 	FileSize     int64     `json:"fileSize"`
@@ -83,6 +87,7 @@ func sessionsOf(g store.Group) []Session {
 			Agent:        s.Agent,
 			Cwd:          g.Cwd,
 			Profile:      g.Profile,
+			Store:        s.Store,
 			Orphan:       orphan,
 			Title:        s.Title,
 			MessageCount: s.MessageCount,

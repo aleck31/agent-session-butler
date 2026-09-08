@@ -25,6 +25,10 @@ type Session struct {
 	FileSize     int64     `json:"fileSize"`     // total bytes; 0 for DB-backed sessions
 	ModifiedAt   time.Time `json:"modifiedAt"`   // newest mtime (file agents) / ended_at (Hermes)
 	Locked       bool      `json:"locked"`       // held by a live process (a running agent owns the lock)
+	// Store names the backing store when an agent keeps more than one and the same
+	// id can appear in each. Kiro does: "v1" and "v2", the names its own CLI uses.
+	// Empty for agents with a single store.
+	Store string `json:"store"`
 
 	// CacheKey uniquely identifies this session for the store's enrichment cache.
 	// For file agents it's the primary file path; for Hermes it's db-path#id.

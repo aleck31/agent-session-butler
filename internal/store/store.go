@@ -216,18 +216,56 @@ func (s *Store) Delete(sess agent.Session) error {
 	return nil
 }
 
+// ErrAmbiguousID is returned when an id matches sessions in more than one store
+// and the caller did not say which. Kiro copies a v1 session into v2 under the
+// same id, so guessing would mean acting on whichever the scan happened to reach
+// first — and for a delete, that is the wrong session half the time.
+var ErrAmbiguousID = errors.New("id matches more than one session")
+
+// findSession locates a session by id, narrowed by store when given. An empty
+// store matches any, but only if exactly one session matches.
+func (s *Store) findSession(id, store string) (Group, agent.Session, error) {
+	var hits []agent.Session
+	var groups []Group
+	for _, g := range s.Scan() {
+		for _, sess := range g.Sessions {
+			if sess.ID != id {
+				continue
+			}
+			if store != "" && sess.Store != store {
+				continue
+			}
+			hits = append(hits, sess)
+			groups = append(groups, g)
+		}
+	}
+	switch len(hits) {
+	case 0:
+		if store != "" {
+			return Group{}, agent.Session{}, fmt.Errorf("no session with id %q in the %s store", id, store)
+		}
+		return Group{}, agent.Session{}, fmt.Errorf("no session with id %q", id)
+	case 1:
+		return groups[0], hits[0], nil
+	default:
+		var stores []string
+		for _, h := range hits {
+			stores = append(stores, h.Store)
+		}
+		return Group{}, agent.Session{}, fmt.Errorf("%w: %q is in the %s stores — say which with a store",
+			ErrAmbiguousID, id, strings.Join(stores, " and "))
+	}
+}
+
 // DeleteByID finds a session by its id (via a fresh scan) and deletes it.
 // Returns an error if no session matches or the delete fails. Used by callers
 // that only have an id (e.g. the HTTP layer).
-func (s *Store) DeleteByID(id string) error {
-	for _, g := range s.Scan() {
-		for _, sess := range g.Sessions {
-			if sess.ID == id {
-				return s.Delete(sess)
-			}
-		}
+func (s *Store) DeleteByID(id, store string) error {
+	_, sess, err := s.findSession(id, store)
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("no session with id %q", id)
+	return s.Delete(sess)
 }
 
 // RelocateByID moves (or copies, if asCopy) the session with the given id to
@@ -235,71 +273,61 @@ func (s *Store) DeleteByID(id string) error {
 // the normalised cwd it was actually filed under — the target is expanded and
 // validated, so what gets stored is not necessarily the string passed in.
 // Refuses locked sessions and targets that are not an existing directory.
-func (s *Store) RelocateByID(id, newCwd string, asCopy bool) (newID, resolvedCwd string, err error) {
+func (s *Store) RelocateByID(id, store, newCwd string, asCopy bool) (newID, resolvedCwd string, err error) {
 	target, err := resolveTargetCwd(newCwd)
 	if err != nil {
 		return "", "", err
 	}
-	for _, g := range s.Scan() {
-		for _, sess := range g.Sessions {
-			if sess.ID != id {
-				continue
-			}
-			if sess.Locked {
-				return "", "", fmt.Errorf("session is in use by a running process")
-			}
-			a := s.agentNamed(sess.Agent)
-			if a == nil {
-				return "", "", fmt.Errorf("unknown agent %q", sess.Agent)
-			}
-			newID, err := a.Relocate(sess, target, asCopy)
-			if err != nil {
-				return "", "", err
-			}
-			s.mu.Lock()
-			delete(s.cache, sess.CacheKey) // moved/copied → old cache entry is stale
-			s.mu.Unlock()
-			return newID, target, nil
-		}
+	_, sess, err := s.findSession(id, store)
+	if err != nil {
+		return "", "", err
 	}
-	return "", "", fmt.Errorf("no session with id %q", id)
+	if sess.Locked {
+		return "", "", fmt.Errorf("session is in use by a running process")
+	}
+	a := s.agentNamed(sess.Agent)
+	if a == nil {
+		return "", "", fmt.Errorf("unknown agent %q", sess.Agent)
+	}
+	newID, err = a.Relocate(sess, target, asCopy)
+	if err != nil {
+		return "", "", err
+	}
+	s.mu.Lock()
+	delete(s.cache, sess.CacheKey) // moved/copied → old cache entry is stale
+	s.mu.Unlock()
+	return newID, target, nil
 }
 
 // RenameByID sets a session's title in its owning agent's own metadata, so the
 // agent shows the new title too. Refuses locked sessions and blank titles.
 // Returns the trimmed title that was actually written.
-func (s *Store) RenameByID(id, title string) (string, error) {
+func (s *Store) RenameByID(id, store, title string) (string, error) {
 	t := strings.TrimSpace(title)
 	if t == "" {
 		return "", fmt.Errorf("title must not be empty")
 	}
 	// Deliberately no length cap. An earlier one at 200 runes looked sensible until
 	// it made the operation non-round-trippable: agents store far longer titles
-	// themselves (a Codex title is the raw first prompt, 9,934 characters in one
-	// real case), so a cap rejects putting back a title that was already there.
-	// Clamping is a display concern and already handled where titles are rendered.
-	for _, g := range s.Scan() {
-		for _, sess := range g.Sessions {
-			if sess.ID != id {
-				continue
-			}
-			if sess.Locked {
-				return "", fmt.Errorf("session is in use by a running process")
-			}
-			a := s.agentNamed(sess.Agent)
-			if a == nil {
-				return "", fmt.Errorf("unknown agent %q", sess.Agent)
-			}
-			if err := a.Rename(sess, t); err != nil {
-				return "", err
-			}
-			s.mu.Lock()
-			delete(s.cache, sess.CacheKey) // the cached title is now stale
-			s.mu.Unlock()
-			return t, nil
-		}
+	// themselves, so a cap rejects putting back a title that was already there.
+	_, sess, err := s.findSession(id, store)
+	if err != nil {
+		return "", err
 	}
-	return "", fmt.Errorf("no session with id %q", id)
+	if sess.Locked {
+		return "", fmt.Errorf("session is in use by a running process")
+	}
+	a := s.agentNamed(sess.Agent)
+	if a == nil {
+		return "", fmt.Errorf("unknown agent %q", sess.Agent)
+	}
+	if err := a.Rename(sess, t); err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	delete(s.cache, sess.CacheKey) // the cached title is now stale
+	s.mu.Unlock()
+	return t, nil
 }
 
 // group buckets sessions by cwd; newest session first within a group, and
@@ -333,23 +361,23 @@ var ErrTranscriptUnsupported = errors.New("this agent cannot show session conten
 
 // Transcript returns a session's conversation. Sessions reach 97 MB, so opts
 // bounds what is read; with no bound the caller has opted into the whole thing.
-func (s *Store) TranscriptByID(id string, opts agent.TranscriptOptions) (agent.Session, []agent.Turn, error) {
-	for _, g := range s.Scan() {
-		for _, sess := range g.Sessions {
-			if sess.ID != id {
-				continue
-			}
-			a := s.agentNamed(sess.Agent)
-			if a == nil {
-				return sess, nil, fmt.Errorf("unknown agent %q", sess.Agent)
-			}
-			r, ok := a.(agent.Reader)
-			if !ok {
-				return sess, nil, ErrTranscriptUnsupported
-			}
-			ex, err := r.Transcript(sess, opts)
-			return sess, ex, err
-		}
+func (s *Store) TranscriptByID(id, store string, opts agent.TranscriptOptions) (agent.Session, []agent.Turn, error) {
+	g, sess, err := s.findSession(id, store)
+	if err != nil {
+		return agent.Session{}, nil, err
 	}
-	return agent.Session{}, nil, fmt.Errorf("no session with id %q", id)
+	a := s.agentNamed(sess.Agent)
+	if a == nil {
+		return sess, nil, fmt.Errorf("unknown agent %q", sess.Agent)
+	}
+	r, ok := a.(agent.Reader)
+	if !ok {
+		return sess, nil, ErrTranscriptUnsupported
+	}
+	// Enrich first: the title is a lazy field, and a viewer that heads its output
+	// with a filename or a placeholder is showing the wrong thing.
+	enriched := s.EnrichGroup(Group{Cwd: g.Cwd, Profile: g.Profile,
+		Sessions: []agent.Session{sess}}).Sessions[0]
+	turns, err := r.Transcript(enriched, opts)
+	return enriched, turns, err
 }

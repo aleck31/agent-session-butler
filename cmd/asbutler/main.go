@@ -90,6 +90,7 @@ Usage:
   asbutler cp <id>... <new-cwd> Copy sessions to a new working directory (fresh ids)
   asbutler rename <id> <title>  Set a session's title, in the agent's own metadata
   asbutler show <id>            Print a session's conversation (last 5 turns)
+    [--store v1|v2]             Which store, when an id is in more than one
     [--tail N|--head N|--all]   How many turns; --all can be very large
     [--tools]                   Include full tool arguments and output
   asbutler webui [--addr host:port] [--no-open]  Open the local browser UI (default 127.0.0.1:7788)
@@ -339,6 +340,28 @@ func printSessions(sessions []view.Session) {
 	tw.Flush()
 }
 
+// takeStoreFlag pulls --store out of an argument list. Kiro keeps two stores and
+// the same id can be in both, so an operation on such an id has to say which.
+func takeStoreFlag(cmd string, args []string) (rest []string, store string) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--store":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "%s: --store needs a value (e.g. --store v1)\n", cmd)
+				os.Exit(2)
+			}
+			store = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--store="):
+			store = strings.TrimPrefix(a, "--store=")
+		default:
+			rest = append(rest, a)
+		}
+	}
+	return rest, store
+}
+
 // rmResult is one id's deletion outcome (JSON output for agents).
 type rmResult struct {
 	ID      string `json:"id"`
@@ -347,6 +370,7 @@ type rmResult struct {
 }
 
 func cmdRm(args []string) {
+	args, storeName := takeStoreFlag("rm", args)
 	human := false
 	var ids []string
 	for _, a := range args {
@@ -366,7 +390,7 @@ func cmdRm(args []string) {
 	results := make([]rmResult, 0, len(ids))
 	anyFail := false
 	for _, id := range ids {
-		err := s.DeleteByID(id)
+		err := s.DeleteByID(id, storeName)
 		r := rmResult{ID: id, Deleted: err == nil}
 		if err != nil {
 			r.Error = err.Error()
@@ -407,6 +431,7 @@ func cmdRelocate(args []string, asCopy bool) {
 	if asCopy {
 		name = "cp"
 	}
+	args, storeName := takeStoreFlag(name, args)
 	human := false
 	var pos []string
 	for _, a := range args {
@@ -430,7 +455,7 @@ func cmdRelocate(args []string, asCopy bool) {
 	results := make([]relocateResult, 0, len(ids))
 	anyFail := false
 	for _, id := range ids {
-		newID, resolved, err := s.RelocateByID(id, newCwd, asCopy)
+		newID, resolved, err := s.RelocateByID(id, storeName, newCwd, asCopy)
 		// Report the cwd it was actually filed under, not the string passed in —
 		// the target is expanded and normalised on the way through.
 		res := relocateResult{ID: newID, NewCwd: resolved, Copied: asCopy}
@@ -478,6 +503,7 @@ type renameResult struct {
 // giving several sessions the same title would recreate the ambiguity renaming
 // exists to remove.
 func cmdRename(args []string) {
+	args, storeName := takeStoreFlag("rename", args)
 	human := false
 	var pos []string
 	for _, a := range args {
@@ -494,7 +520,7 @@ func cmdRename(args []string) {
 	}
 	id, title := pos[0], strings.Join(pos[1:], " ")
 
-	written, err := store.New().RenameByID(id, title)
+	written, err := store.New().RenameByID(id, storeName, title)
 	res := renameResult{ID: id, Title: written}
 	if err != nil {
 		res.Title = title
@@ -594,6 +620,7 @@ type transcriptResult struct {
 // with tool bodies folded — a whole session reaches 97 MB, so showing everything
 // has to be asked for.
 func cmdShow(args []string) {
+	args, storeName := takeStoreFlag("show", args)
 	human, bodies := false, false
 	opts := agent.TranscriptOptions{Tail: agent.DefaultTurns}
 	var id string
@@ -641,7 +668,7 @@ func cmdShow(args []string) {
 	}
 	opts.Bodies = bodies
 
-	sess, turns, err := store.New().TranscriptByID(id, opts)
+	sess, turns, err := store.New().TranscriptByID(id, storeName, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "show: %v\n", err)
 		os.Exit(1)

@@ -58,7 +58,7 @@ func TestFlatContract(t *testing.T) {
 		t.Fatalf("sessions: got %d, want 1", len(sessions))
 	}
 	assertKeys(t, "session", sessions[0].(map[string]any),
-		"id", "agent", "cwd", "profile", "orphan", "title",
+		"id", "agent", "cwd", "profile", "store", "orphan", "title",
 		"messageCount", "fileSize", "sizeHuman", "modifiedAt", "locked")
 
 	// Every session carries its own cwd/profile/orphan so a caller needs no
@@ -72,6 +72,10 @@ func TestFlatContract(t *testing.T) {
 	}
 	if s["profile"] != "" {
 		t.Errorf("profile: got %q, want empty for a file agent", s["profile"])
+	}
+	// store is empty for agents with a single store; only Kiro fills it.
+	if s["store"] != "" {
+		t.Errorf("store: got %q, want empty for a single-store agent", s["store"])
 	}
 	// Both a byte count (for sort/sum) and a human string are provided.
 	if s["fileSize"].(float64) != 2048 {

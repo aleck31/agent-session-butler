@@ -88,7 +88,8 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing session id")
 		return
 	}
-	if err := s.store.DeleteByID(id); err != nil {
+	// store narrows an id that appears in more than one of an agent's stores.
+	if err := s.store.DeleteByID(id, r.URL.Query().Get("store")); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -102,12 +103,13 @@ func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		NewCwd string `json:"newCwd"`
 		Copy   bool   `json:"copy"`
+		Store  string `json:"store"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NewCwd == "" {
 		writeError(w, http.StatusBadRequest, "expected JSON body with a non-empty \"newCwd\"")
 		return
 	}
-	newID, resolved, err := s.store.RelocateByID(id, req.NewCwd, req.Copy)
+	newID, resolved, err := s.store.RelocateByID(id, req.Store, req.NewCwd, req.Copy)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -123,12 +125,13 @@ func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
 		Title string `json:"title"`
+		Store string `json:"store"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Title) == "" {
 		writeError(w, http.StatusBadRequest, "expected JSON body with a non-empty \"title\"")
 		return
 	}
-	title, err := s.store.RenameByID(id, req.Title)
+	title, err := s.store.RenameByID(id, req.Store, req.Title)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -152,7 +155,7 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 		opts.Head, opts.Tail = n, 0
 	}
 
-	sess, turns, err := s.store.TranscriptByID(r.PathValue("id"), opts)
+	sess, turns, err := s.store.TranscriptByID(r.PathValue("id"), q.Get("store"), opts)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return

@@ -189,6 +189,9 @@
   .tx-tool-size { color: var(--faint); font-variant-numeric: tabular-nums; }
   .tx-tool pre, .tx-think pre { flex-basis: 100%; margin: 4px 0 0; padding: 7px 9px; background: var(--panel-2);
     border-radius: 4px; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; }
+  .storetag { margin-left: 5px; padding: 0 4px; border-radius: 3px; font-size: 10px;
+    background: var(--panel-2); color: var(--faint); border: 1px solid var(--line);
+    font-variant-numeric: tabular-nums; }
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 60;
     max-width: 70vw; padding: 9px 14px; border-radius: 6px; cursor: pointer;
     background: var(--danger-bg, #7f1d1d); color: #fff; font-size: 13px;
@@ -401,22 +404,28 @@
                 <th class="nosort"></th>
               </tr></thead>
               <tbody>
-                <template x-for="s in sortedSessions()" :key="s.id">
-                  <tr :class="{ sel: selectedIds.has(s.id) }">
-                    <td><input type="checkbox" class="ck" :checked="selectedIds.has(s.id)" :disabled="s.locked" @change="toggleRow(s)"></td>
+                <template x-for="s in sortedSessions()" :key="skey(s)">
+                  <tr :class="{ sel: selectedIds.has(skey(s)) }">
+                    <td><input type="checkbox" class="ck" :checked="selectedIds.has(skey(s))" :disabled="s.locked" @change="toggleRow(s)"></td>
                     <td class="title" :title="s.locked ? s.title : s.title + '\n(click to rename)'">
                       <svg class="icon lock" x-show="s.locked" title="Held by a running agent"><use href="#i-lock"/></svg>
-                      <template x-if="editing !== s.id">
+                      <template x-if="editing !== skey(s)">
                         <span class="titletext" :class="{ editable: !s.locked }"
                               @click="!s.locked && startEdit(s)" x-text="s.title"></span>
                       </template>
-                      <template x-if="editing === s.id">
+                      <template x-if="editing === skey(s)">
                         <input class="titleedit" type="text" x-model="editTitle"
                                @keydown.enter="commitEdit(s)" @keydown.escape="cancelEdit()"
                                @blur="commitEdit(s)" x-init="$el.focus(); $el.select()">
                       </template>
                     </td>
-                    <td class="agent c-agent" x-text="s.agent"></td>
+                    <td class="agent c-agent">
+                      <span x-text="s.agent"></span>
+                      <!-- Kiro keeps two stores and the same id appears in both; the
+                           older copy is the one worth cleaning up. -->
+                      <span class="storetag" x-show="s.store" x-text="s.store"
+                            :title="`Stored in this agent's ${s.store} store`"></span>
+                    </td>
                     <td class="num" x-text="s.messageCount != null ? s.messageCount + ' msgs' : '·'"></td>
                     <td class="num" x-text="s.sizeHuman"></td>
                     <td x-text="fmtDate(s.modifiedAt)"></td>
@@ -561,7 +570,12 @@ function butler() {
   return {
     summary: null, loading: false, dirQuery: '',
     selectedKey: null, enriched: {},
+    // Sessions are keyed by (id, store), not id: Kiro keeps the same id in a v1 and
+    // a v2 store, so an id alone selects two rows and deletes an unpredictable one.
     selectedIds: new Set(),
+    skey(s) { return s.id + '\u0000' + (s.store || ''); },
+    unkey(k) { const [id, store] = k.split('\u0000'); return { id, store: store || '' }; },
+    storeQuery(s) { return s.store ? '?store=' + encodeURIComponent(s.store) : ''; },
     toast: '',        // transient error text, for actions with no dialog of their own
     sort: { key: 'modifiedAt', dir: 'desc' },
     pending: null, deleting: false, delError: '',
@@ -751,20 +765,21 @@ function butler() {
     },
 
     deletableSessions() { return (this.selected?.sessions || []).filter(s => !s.locked && this.activeAgents.has(s.agent)); },
-    allSelected() { const d = this.deletableSessions(); return d.length > 0 && d.every(s => this.selectedIds.has(s.id)); },
+    allSelected() { const d = this.deletableSessions(); return d.length > 0 && d.every(s => this.selectedIds.has(this.skey(s))); },
     toggleSelectAll() {
       if (this.allSelected()) this.selectedIds = new Set();
-      else this.selectedIds = new Set(this.deletableSessions().map(s => s.id));
+      else this.selectedIds = new Set(this.deletableSessions().map(s => this.skey(s)));
     },
     toggleRow(s) {
       const next = new Set(this.selectedIds);
-      next.has(s.id) ? next.delete(s.id) : next.add(s.id);
+      const k = this.skey(s);
+      next.has(k) ? next.delete(k) : next.add(k);
       this.selectedIds = next;
     },
 
     askDeleteOne(s) {
       this.delError = '';
-      this.pending = { ids: [s.id], label: s.title + '  (' + s.agent + ' · ' + s.sizeHuman + ')' };
+      this.pending = { ids: [this.skey(s)], label: s.title + '  (' + s.agent + ' · ' + s.sizeHuman + ')' };
     },
 
     // Conversation viewer. Loading a whole session is never the default: they reach
@@ -782,7 +797,7 @@ function butler() {
       this.txTail = this.TX_PAGE;
       this.txBodies = false;
       this.txExhausted = false;
-      this.tx = { id: s.id, title: s.title, agent: s.agent, cwd: s.cwd, turns: [] };
+      this.tx = { id: s.id, store: s.store || '', title: s.title, agent: s.agent, cwd: s.cwd, turns: [] };
       this.loadTranscript(s.id, this.txTail);
     },
     // Each click asks for one more page from the end. The server returns the whole
@@ -797,6 +812,7 @@ function butler() {
       try {
         const q = new URLSearchParams({ tail: String(tail) });
         if (this.txBodies) q.set('tools', '1');
+        if (this.tx?.store) q.set('store', this.tx.store);
         const r = await fetch(`/api/session/${encodeURIComponent(id)}/transcript?` + q);
         if (!r.ok) {
           const b = await r.json().catch(() => ({}));
@@ -824,19 +840,19 @@ function butler() {
     editing: null,   // id of the row being edited
     editTitle: '',
     startEdit(s) {
-      this.editing = s.id;
+      this.editing = this.skey(s);
       this.editTitle = s.title;
     },
     cancelEdit() { this.editing = null; this.editTitle = ''; },
     async commitEdit(s) {
-      if (this.editing !== s.id) return; // already committed or cancelled
+      if (this.editing !== this.skey(s)) return; // already committed or cancelled
       const title = this.editTitle.trim();
       this.editing = null;
       if (!title || title === s.title) return; // nothing to do
       try {
         const r = await fetch('/api/session/' + encodeURIComponent(s.id) + '/rename', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title }),
+          body: JSON.stringify({ title, store: s.store || '' }),
         });
         if (r.ok) {
           const b = await r.json().catch(() => ({}));
@@ -869,12 +885,12 @@ function butler() {
     // Selected sessions that can actually be relocated. The button counts these,
     // not the selection, so it never promises work it will not do.
     relocatableSelected() {
-      return (this.selected?.sessions || []).filter(s => this.selectedIds.has(s.id) && this.canRelocate(s));
+      return (this.selected?.sessions || []).filter(s => this.selectedIds.has(this.skey(s)) && this.canRelocate(s));
     },
 
     askRelocate(s) {
       this.relocError = '';
-      this.reloc = { ids: [s.id], title: s.title + '  (' + s.agent + ')', newCwd: s.cwd || '' };
+      this.reloc = { ids: [this.skey(s)], title: s.title + '  (' + s.agent + ')', newCwd: s.cwd || '' };
     },
     askRelocateSelected() {
       const list = this.relocatableSelected();
@@ -882,7 +898,7 @@ function butler() {
       this.relocError = '';
       const skipped = this.selectedIds.size - list.length;
       this.reloc = {
-        ids: list.map(s => s.id),
+        ids: list.map(s => this.skey(s)),
         title: `${list.length} sessions from ${this.selected.displayName || this.selected.cwd}`
              + (skipped ? `  (${skipped} skipped — can't be moved)` : ''),
         newCwd: this.selected.cwd || '',
@@ -896,11 +912,12 @@ function butler() {
       const failed = [];
       // Best-effort per id, matching the CLI and the batch delete: one refusal
       // must not strand the rest, and a move cannot be rolled back anyway.
-      for (const id of ids) {
+      for (const key of ids) {
+        const { id, store } = this.unkey(key);
         try {
           const r = await fetch('/api/session/' + encodeURIComponent(id) + '/relocate', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ newCwd: cwd, copy: asCopy }),
+            body: JSON.stringify({ newCwd: cwd, copy: asCopy, store }),
           });
           if (!r.ok) {
             const b = await r.json().catch(() => ({}));
@@ -928,10 +945,12 @@ function butler() {
       if (!this.pending) return;
       this.deleting = true; this.delError = '';
       const failed = [];
-      for (const id of this.pending.ids) {
+      for (const key of this.pending.ids) {
+        const { id, store } = this.unkey(key);
         try {
-          const r = await fetch('/api/session/' + encodeURIComponent(id), { method: 'DELETE' });
-          if (r.status === 204) this.applyDeleted(id);
+          const r = await fetch('/api/session/' + encodeURIComponent(id) +
+            (store ? '?store=' + encodeURIComponent(store) : ''), { method: 'DELETE' });
+          if (r.status === 204) this.applyDeleted(key);
           else { const b = await r.json().catch(() => ({})); failed.push(`${this.shortId(id)}: ${b.error || r.status}`); }
         } catch (_) { failed.push(`${this.shortId(id)}: network error`); }
       }
@@ -941,16 +960,18 @@ function butler() {
     },
 
     // Remove a deleted session locally and keep the rollup + selection truthful.
-    applyDeleted(id) {
-      const g = this.summary.groups.find(x => (x.sessions || []).some(s => s.id === id));
+    applyDeleted(key) {
+      const { id, store } = this.unkey(key);
+      const same = x => x.id === id && (x.store || '') === store;
+      const g = this.summary.groups.find(x => (x.sessions || []).some(same));
       if (!g) return;
-      const s = g.sessions.find(x => x.id === id);
-      g.sessions = g.sessions.filter(x => x.id !== id);
+      const s = g.sessions.find(same);
+      g.sessions = g.sessions.filter(x => !same(x));
       g.sessionCount = Math.max(0, g.sessionCount - 1);
       g.totalSize -= s.fileSize; g.totalSizeHuman = this.human(g.totalSize);
       this.summary.totalCount--; this.summary.totalSize -= s.fileSize;
       if (g.orphan) this.summary.orphanSize -= s.fileSize;
-      const sel = new Set(this.selectedIds); sel.delete(id); this.selectedIds = sel;
+      const sel = new Set(this.selectedIds); sel.delete(key); this.selectedIds = sel;
       if (g.sessionCount === 0) {
         const gk = this.gkey(g);
         this.summary.groups = this.summary.groups.filter(x => this.gkey(x) !== gk);
