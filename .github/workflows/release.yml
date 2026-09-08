@@ -1,0 +1,72 @@
+name: Release
+
+# Triggered by pushing a v* tag. Builds the five assets install.sh expects and
+# publishes them, so the asset names are guaranteed by the script that produces
+# them rather than by whoever typed the build commands.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # needed to create the release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # release notes are generated from history
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # A tag that disagrees with the version constant produces a binary that
+      # reports the wrong version, and install.sh compares the two to decide
+      # whether to download or build — so a mismatch has to stop the release.
+      - name: tag matches the version constant
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          src="$(awk -F'"' '/^const version = /{print $2; exit}' cmd/asbutler/main.go)"
+          echo "tag=$tag  source=$src"
+          if [ "$tag" != "$src" ]; then
+            echo "::error::tag v$tag does not match const version = \"$src\" in cmd/asbutler/main.go"
+            exit 1
+          fi
+
+      # Same checks as CI, so a tag cannot publish something that would have
+      # failed on master.
+      - name: checks
+        run: ./scripts/check.sh --quick
+
+      # Asset names must stay exactly asbutler-<tag>-<os>-<arch>[.exe]; install.sh
+      # builds that string to find its download.
+      - name: build release assets
+        env:
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p dist
+          tag="$GITHUB_REF_NAME"
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            os="${target%/*}"; arch="${target#*/}"; ext=""
+            [ "$os" = windows ] && ext=".exe"
+            out="dist/asbutler-$tag-$os-$arch$ext"
+            echo "building $out"
+            GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "$out" ./cmd/asbutler
+          done
+          ls -la dist
+
+      # Notes are generated from the commit history. Replace them afterwards with
+      #   gh release edit <tag> --notes-file notes.md
+      # when the release deserves a written summary.
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/asbutler-"$GITHUB_REF_NAME"-*

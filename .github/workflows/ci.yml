@@ -1,0 +1,61 @@
+name: CI
+
+# Linux only, on purpose. Go cross-compiles without the target platform, and the
+# SQLite driver is pure Go (CGO off), so every release binary can be produced
+# here — and on a private repo a macOS runner costs roughly 10x a Linux one for
+# coverage of two small build-tagged branches. The trade-off is recorded in
+# .dev/known-gaps.md: the darwin/windows paths get a compile check, not a test run.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # One script, called by CI and by the pre-push hook, so a local pass and a
+      # CI pass mean the same thing. Divergence is how a local check quietly stops
+      # being worth running.
+      - name: checks
+        run: ./scripts/check.sh --quick
+
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Split out of check.sh's cross-compile step so a failure names the target.
+      # Compiling every one is what catches a build-tagged file (lock_unix.go,
+      # lock_windows.go) changed on one platform and broken on the other.
+      - name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -o /dev/null ./cmd/asbutler

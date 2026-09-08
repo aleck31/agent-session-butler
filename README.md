@@ -156,6 +156,26 @@ Only the process-lock check is platform-specific (build-tag split); everything e
 
 Tests live beside the code (`go test ./...`). They run against sandboxed `HOME` / `HERMES_HOME` temp dirs and never touch real session data. The invariants they pin are the ones that were established empirically and are easy to break by accident: Claude's lossy project-dir encoding (cwd must come from file contents), the move-rewrites-both-dir-and-in-file-cwd rule, Hermes' cli-only scope and read-only access, Codex's schema-versioned state DB and turn-counting rules, the `(profile, cwd)` grouping key, stale-lock detection, the mtime cache, and the agent-facing JSON contract below.
 
+## CI
+
+Checks run in two places, and both call the same script so they cannot disagree:
+
+```bash
+./scripts/check.sh            # gofmt, vet, tests, all five release targets — ~8s
+./scripts/check.sh --quick    # skip the cross-compiles
+```
+
+Run it before pushing. There is deliberately **no git hook** to do that for you: the only way to make git run a hook out of a clone is `core.hooksPath`, and on a managed machine that setting may already belong to something else — here it is claimed at system level by a corporate secret-scanning tool, and pointing it at a repo-local directory silently disables it. A convenience check is not worth turning that off, so this stays a command you run.
+
+Two workflows under `.github/workflows/`:
+
+- **CI** (push to master, PRs): runs `scripts/check.sh`, plus a per-target build matrix so a failure names the platform.
+- **Release** (on a `v*` tag): builds the five assets `install.sh` expects and publishes them.
+
+Both run on Linux only. Go cross-compiles without the target platform and the SQLite driver is pure Go (CGO off), so every release binary is produced there; a macOS runner would cost roughly ten times as much on a private repo for coverage of two small build-tagged branches. The trade-off — those branches are compile-checked, not behaviour-tested — is recorded in the development notes.
+
+The release job refuses to publish when the tag disagrees with `const version` in `cmd/asbutler/main.go`, since `install.sh` compares those two to decide whether to download or build. Release notes are generated from the commit history; replace them with `gh release edit <tag> --notes-file notes.md` when a release deserves a written summary.
+
 ## License
 
 [MIT](LICENSE)
