@@ -15,6 +15,7 @@ A single static Go binary. Runs on Linux, macOS, and Windows. Provides a termina
 - **Orphan detection** — directories that no longer exist (project deleted, sessions linger) are flagged `[missing]` — prime cleanup candidates.
 - **Lazy enrichment** — message count and titles are computed on demand, so a bare listing stays instant even with tens of MB of `.jsonl`.
 - **Move / copy sessions** — re-home a session to a new working directory when a repo moves (`~/ideas/foo` → `~/repos/foo`), so the agent can resume it at the new path. Move or copy, via CLI or the web UI. (Not supported for Hermes or Codex, whose cwd lives somewhere this tool only reads.)
+- **View a session** — read the conversation without opening the agent: `asbutler show <id>`, or click the eye icon in the web UI. Defaults to the last few turns with tool output folded, because sessions reach 97 MB.
 - **Rename sessions** — a title is the session's first prompt, so resuming the same task leaves several rows that read identically. Give one a name you'll recognise, written into the agent's own metadata so the agent shows it too. Click the title in the web UI, or `asbutler rename <id> <title>`.
 - **Lock-aware** — where the agent exposes a lock, sessions held by a **running** agent are detected (live PID check) and protected from deletion or relocation. Codex exposes none, so its deletion safety is delegated to `codex delete`.
 
@@ -77,6 +78,9 @@ asbutler rename <id> <title>  # set a session's title, in the agent's own metada
 asbutler webui                # open the browser UI (default http://127.0.0.1:7788)
 asbutler webui --addr :8080   # bind a different host:port
 asbutler webui --no-open      # start the server without opening a browser
+asbutler show <id>            # the conversation: last 5 turns, tools folded
+asbutler show <id> --tail 20  # more turns (--head N from the start, --all for everything)
+asbutler show <id> --tools    # include full tool arguments and output
 asbutler update               # replace this binary with the latest release
 asbutler update --check       # report whether a newer release exists, install nothing
 asbutler version              # print the version, and note a newer release
@@ -97,6 +101,26 @@ go test ./internal/store/ -bench Scan -benchtime 5x -run '^$'   # whole scan, co
 ```
 
 Note: before 0.6.1 `list` had no path filter and always returned every session. Pass `--all` for that behaviour. Since 0.6.2 an unrecognised flag is an error rather than being silently ignored — a typo like `--paths ~/foo` used to fall back to the current directory and quietly return the wrong scope.
+
+### Viewing a session
+
+```bash
+asbutler show <id>            # JSON, for scripts and agents
+asbutler show <id> -H         # readable text
+```
+
+The unit is a **turn** — one message from you plus everything the agent did before you spoke again — not a message. That distinction matters: measured against real history, one turn holds 3 to 530 messages, so "the last 30 messages" can land in the middle of a single agent loop. The default is the last 5 turns, which is 2.6–77 KB of text out of sessions that run to tens of megabytes.
+
+Tool arguments and output are folded to a one-line summary with their byte counts, and reasoning to a character count; `--tools` includes the bodies, clipped at 8 KB each. Base64 images render as `[image]` rather than being inlined.
+
+What each agent can supply differs, and these gaps are in the data rather than unimplemented:
+
+| Agent | Per-message time | Reasoning |
+|-------|------------------|-----------|
+| Kiro | not recorded | available |
+| Claude Code | available | available |
+| Codex | available | encrypted by Codex |
+| Hermes | available | not stored |
 
 ### Updating
 
@@ -138,7 +162,7 @@ What that pins down, for anyone changing this code:
 
 ### Browser UI (`webui`)
 
-`asbutler webui` starts a local HTTP server, opens it in your default browser (skip with `--no-open`), and serves a self-contained two-pane master-detail view. A resizable sidebar (drag its right edge; the width is remembered) lists every working directory with a fixed header of agent-filter chips and a directory search; Hermes groups are labelled with their profile (`name <profile>`). Selecting a directory shows its sessions in a sortable table (Title / Agent / Messages / Size / Modified / Session ID; hover a session id to see it in full, click to copy). The agent chips toggle which agents are shown — like the CLI's `--agent`, all discovered agents are on by default. A persistent summary strip at the top of the detail pane carries a disk-usage bar split per agent plus an orphaned segment, each with its size and share of the total. Message counts and titles resolve on demand when a directory is opened. Click a session's title to rename it in place (Enter commits, Escape cancels). Rows are multi-selectable (Select all) for batch delete and batch move/copy, both behind a confirmation dialog; sessions held by a running agent are lock-protected. The batch move button counts only the sessions that can actually be relocated and says how many it skipped. A dark/bright theme toggle is remembered across visits and defaults to the system preference. The frontend (a small Alpine.js app) and its assets are embedded into the binary via `go:embed`, so it needs no network access and ships as a single file. Same core as the CLI — nothing new touches session parsing or deletion.
+`asbutler webui` starts a local HTTP server, opens it in your default browser (skip with `--no-open`), and serves a self-contained two-pane master-detail view. A resizable sidebar (drag its right edge; the width is remembered) lists every working directory with a fixed header of agent-filter chips and a directory search; Hermes groups are labelled with their profile (`name <profile>`). Selecting a directory shows its sessions in a sortable table (Title / Agent / Messages / Size / Modified / Session ID; hover a session id to see it in full, click to copy). The agent chips toggle which agents are shown — like the CLI's `--agent`, all discovered agents are on by default. A persistent summary strip at the top of the detail pane carries a disk-usage bar split per agent plus an orphaned segment, each with its size and share of the total. Message counts and titles resolve on demand when a directory is opened. Click the eye icon on a row to read its conversation. The panel opens on the last 5 turns with tool output folded; a button at the bottom loads five earlier turns at a time, holding your place rather than jumping. Message text is rendered as Markdown — code blocks, tables and lists included — and your turns are set apart from the agent's by shape, not just a label. Turns that carry only a tool result render nothing at all: in one real session 57% of the raw turns were such carriers. Click a session's title to rename it in place (Enter commits, Escape cancels). Rows are multi-selectable (Select all) for batch delete and batch move/copy, both behind a confirmation dialog; sessions held by a running agent are lock-protected. The batch move button counts only the sessions that can actually be relocated and says how many it skipped. A dark/bright theme toggle is remembered across visits and defaults to the system preference. The frontend (a small Alpine.js app) and its assets are embedded into the binary via `go:embed`, so it needs no network access and ships as a single file. Same core as the CLI — nothing new touches session parsing or deletion.
 
 ## Project layout
 
@@ -159,7 +183,11 @@ internal/view/
   view.go                     JSON serialization: Flat (CLI/agents) + Grouped (web UI)
 internal/server/
   server.go                   HTTP routes over the store
-  web/                        embedded UI (index.html + vendored alpine.min.js)
+  web/                        embedded UI; see web/README.md
+    index.html                the whole app (Alpine.js, inline SVG icons)
+    alpine.min.js             vendored, not fetched from a CDN
+    md.js                     Markdown renderer for transcripts (escapes first)
+    md_test.mjs               browser test for md.js, incl. XSS resistance
 ```
 
 Only the process-lock check is platform-specific (build-tag split); everything else is shared.
