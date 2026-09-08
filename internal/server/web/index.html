@@ -118,7 +118,12 @@
      LTR (see dirPath) or the leading "/" is bidi-neutral and gets rendered at
      the far end, so /Users/x/y reads as "Users/x/y/". */
   .dir-path { font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
-  .dir-badge { font-size: 11px; color: var(--muted); background: var(--panel-2); border-radius: 10px; padding: 1px 8px; flex: none; min-width: 30px; text-align: center; }
+  .dir-meta { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+  .dir-badge { font-size: 11px; color: var(--muted); background: var(--panel-2); border-radius: 10px; padding: 1px 8px; min-width: 30px; text-align: center; }
+  /* Disk space is what this tool exists to reclaim, so it is on the row rather
+     than only in the header of a selected directory. */
+  .dir-size { font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .dir.sel .dir-size { color: var(--muted); }
   .dir.sel .dir-badge { background: var(--sel-bord); color: #fff; }
   /* margin-left:auto pins MISSING to a fixed right column, so a varying badge
      width (1 vs 2 digits) doesn't shift it row-to-row. */
@@ -330,7 +335,10 @@
               <div class="dir-path" x-text="dirPath(g.cwd)"></div>
             </div>
             <span class="mini-missing" x-show="g.orphan">missing</span>
-            <span class="dir-badge" x-text="activeInGroup(g)"></span>
+            <div class="dir-meta">
+              <span class="dir-badge" x-text="activeInGroup(g)"></span>
+              <span class="dir-size" x-text="human(activeBytesInGroup(g))"></span>
+            </div>
           </div>
         </template>
       </div>
@@ -690,6 +698,12 @@ function butler() {
     },
     groupHasActive(g) { return (g.sessions || []).some(s => this.activeAgents.has(s.agent)); },
     activeInGroup(g) { return (g.sessions || []).filter(s => this.activeAgents.has(s.agent)).length; },
+    // Bytes for the same sessions the count covers. Using the group's own total
+    // would disagree with the badge as soon as an agent chip is switched off.
+    activeBytesInGroup(g) {
+      return (g.sessions || []).reduce((n, s) =>
+        this.activeAgents.has(s.agent) ? n + (s.fileSize || 0) : n, 0);
+    },
 
     // Disk-usage bar: one segment per *active* agent's live bytes, plus orphaned.
     // Percentages are of the active total, so widths always sum to 100%.
