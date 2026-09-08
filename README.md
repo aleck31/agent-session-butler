@@ -23,12 +23,16 @@ A single static Go binary. Runs on Linux, macOS, and Windows. Provides a termina
 
 | Agent | Session storage |
 |-------|-----------------|
-| Kiro | files under `~/.kiro/sessions/cli/` |
+| Kiro | two stores: files under `~/.kiro/sessions/cli/` (v2) and rows in `data.sqlite3` (v1) |
 | Claude Code | `~/.claude/projects/<encoded-cwd>/*.jsonl` |
 | Codex | rollout `.jsonl` files indexed by `threads` in `$CODEX_HOME/state_<n>.sqlite` (default `~/.codex`) |
 | Hermes | SQLite `state.db` per profile under `$HERMES_HOME` (default `~/.hermes`) |
 
 Most agents keep sessions as files; **Hermes** stores them as rows in a per-profile SQLite database. The tool opens each `state.db` read-only (respecting the gateway's WAL writes) and never writes to it — deletion goes through `hermes sessions delete`, which also clears the FTS index. Only interactive CLI sessions are shown (`source = cli`); channel, cron, and imported sessions have no meaningful working directory and are skipped, keeping Hermes in the same "sessions you ran in a directory" scope as Kiro and Claude Code. Since a DB-backed session has no file size, its size is the total byte length of its message content. Sessions are grouped by profile as well as cwd — the same directory under different Hermes profiles forms distinct groups, labelled `name <profile>` (the root database is the `default` profile). A Hermes session is lock-protected only when its profile's gateway is running and that session is the one the gateway currently holds.
+
+**Kiro** keeps two session stores and the same id can be in both: opening a v1 session copies it into v2 under that id and leaves the original behind. Rows therefore carry a `store` of `v1` or `v2` — the names Kiro's own CLI uses — and a shared id appears once per store, so the stale copy is visible and can be cleaned up. The store is not part of the grouping key: a directory's v1 and v2 sessions sit next to each other, which is how you spot the duplicate.
+
+Because an id can match two sessions, `rm`, `mv`, `cp`, `rename` and `show` accept `--store v1|v2`, and refuse rather than guess when an id is ambiguous. v1 sessions can be listed, read and deleted; renaming and relocating are refused, because v1 stores no title (Kiro shows the first message) and keys conversations by cwd inside its own database.
 
 **Codex** is a hybrid: conversation content lives in per-session rollout files (`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`) while an index of every session lives in the `threads` table of `$CODEX_HOME/state_<n>.sqlite`. The index is authoritative — Codex is migrating off the files, as its own `migrate-rollouts` command implies — so scanning reads only the DB (read-only, one indexed query, no file reads) and a rollout is opened only to count messages. Deletion shells out to `codex delete`, because removing a rollout file directly would leave a dangling `threads` row that Codex's session picker would list as a session whose content is gone. The `_<n>` suffix is a schema version Codex bumps, so the newest `state_<n>.sqlite` is selected rather than a fixed name.
 

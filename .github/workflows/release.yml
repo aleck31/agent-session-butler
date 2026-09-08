@@ -58,15 +58,25 @@ jobs:
           done
           ls -la dist
 
-      # Notes are generated from the commit history. Replace them afterwards with
-      #   gh release edit <tag> --notes-file notes.md
-      # when the release deserves a written summary.
+      # Idempotent on purpose: moving a tag re-runs this job, and a bare `release
+      # create` then fails on the existing name — leaving a published release whose
+      # assets are from the code before the tag moved. Upload over it instead.
+      #
+      # Notes are generated from the commit history on first publish. Replace them
+      # with `gh release edit <tag> --notes-file notes.md` when a release deserves a
+      # written summary; a re-run will not overwrite them.
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            dist/asbutler-"$GITHUB_REF_NAME"-*
+          tag="$GITHUB_REF_NAME"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $tag exists — replacing its assets"
+            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber dist/asbutler-"$tag"-*
+          else
+            gh release create "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$tag" \
+              --generate-notes \
+              dist/asbutler-"$tag"-*
+          fi

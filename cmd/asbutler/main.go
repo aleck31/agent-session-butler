@@ -34,7 +34,7 @@ func writeJSON(v any) {
 }
 
 // version is the release version, printed by `asbutler version`.
-const version = "0.8.0"
+const version = "0.8.1"
 
 func main() {
 	agent.Version = version // one authoritative version, shared with agents we call

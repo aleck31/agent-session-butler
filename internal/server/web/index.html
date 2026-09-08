@@ -473,7 +473,10 @@
           <template x-if="!tx.turns.length">
             <p class="tx-empty">No conversation found in this session.</p>
           </template>
-          <template x-for="(t, ti) in tx.turns" :key="ti">
+          <!-- Newest first: scrolling down goes back in time, which puts the
+               "load earlier" button at the end of what you were already reading.
+               Display order only — the payload stays chronological. -->
+          <template x-for="(t, ti) in txDisplayTurns()" :key="ti">
             <div class="tx-turn-group">
               <!-- A turn with nothing in it is a tool-result carrier or a stripped
                    reasoning block; rendering its label alone is just noise. -->
@@ -803,12 +806,12 @@ function butler() {
     // Each click asks for one more page from the end. The server returns the whole
     // window rather than a delta, so "exhausted" is when asking for more yields no
     // more — the only way to know without a separate count endpoint.
-    loadMore() { return this.loadTranscript(this.tx.id, this.txTail + this.TX_PAGE, true); },
-    async loadTranscript(id, tail, keepPosition) {
+    // A copy, so reversing never mutates what came off the wire.
+    txDisplayTurns() { return [...(this.tx?.turns || [])].reverse(); },
+    loadMore() { return this.loadTranscript(this.tx.id, this.txTail + this.TX_PAGE); },
+    async loadTranscript(id, tail) {
       this.txLoading = true;
       const before = this.tx ? this.tx.turns.length : 0;
-      const body = document.querySelector('.tx-body');
-      const anchor = keepPosition && body ? body.scrollHeight - body.scrollTop : null;
       try {
         const q = new URLSearchParams({ tail: String(tail) });
         if (this.txBodies) q.set('tools', '1');
@@ -824,11 +827,8 @@ function butler() {
         if (!this.tx || this.tx.id !== id) return;
         this.tx = { ...this.tx, ...b };
         this.txExhausted = b.turns.length <= before && before > 0;
-        // Earlier turns are prepended, so hold the reader's place instead of
-        // yanking them back to the top.
-        if (anchor !== null) {
-          this.$nextTick(() => { if (body) body.scrollTop = body.scrollHeight - anchor; });
-        }
+        // Newest first means earlier turns land below what is on screen, so the
+        // reader's position needs no correcting.
       } catch (_) {
         this.toast = 'Network error — is the server still running?';
       } finally { this.txLoading = false; }
