@@ -3,6 +3,7 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -323,4 +324,32 @@ func group(sessions []agent.Session) []Group {
 		return groups[i].LatestModified().After(groups[j].LatestModified())
 	})
 	return groups
+}
+
+// ErrTranscriptUnsupported is returned for agents that cannot render a
+// conversation. None currently, but the Reader interface is separate from Agent
+// so a new backend can be listed and cleaned up before it can be read.
+var ErrTranscriptUnsupported = errors.New("this agent cannot show session contents")
+
+// Transcript returns a session's conversation. Sessions reach 97 MB, so opts
+// bounds what is read; with no bound the caller has opted into the whole thing.
+func (s *Store) TranscriptByID(id string, opts agent.TranscriptOptions) (agent.Session, []agent.Turn, error) {
+	for _, g := range s.Scan() {
+		for _, sess := range g.Sessions {
+			if sess.ID != id {
+				continue
+			}
+			a := s.agentNamed(sess.Agent)
+			if a == nil {
+				return sess, nil, fmt.Errorf("unknown agent %q", sess.Agent)
+			}
+			r, ok := a.(agent.Reader)
+			if !ok {
+				return sess, nil, ErrTranscriptUnsupported
+			}
+			ex, err := r.Transcript(sess, opts)
+			return sess, ex, err
+		}
+	}
+	return agent.Session{}, nil, fmt.Errorf("no session with id %q", id)
 }

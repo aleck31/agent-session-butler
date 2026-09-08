@@ -276,3 +276,27 @@ func TestRenameUnknownSessionIsAConflict(t *testing.T) {
 		t.Errorf("error %q should name the id", msg)
 	}
 }
+
+func TestTranscriptEndpoint(t *testing.T) {
+	h := sandboxServer(t)
+	// Unknown session is a conflict with a readable message, not a 500.
+	w := do(t, h, http.MethodGet, "/api/session/no-such-id/transcript", "")
+	if w.Code != http.StatusConflict {
+		t.Errorf("status: got %d, want 409", w.Code)
+	}
+	if msg := assertErrorBody(t, w); !strings.Contains(msg, "no-such-id") {
+		t.Errorf("error %q should name the id", msg)
+	}
+	// Query parameters are tolerated rather than rejected; a bad number just
+	// leaves the default window in place.
+	for _, q := range []string{"", "?tail=3", "?head=2", "?all=1", "?tools=1", "?tail=notanumber"} {
+		w := do(t, h, http.MethodGet, "/api/session/no-such-id/transcript"+q, "")
+		if w.Code != http.StatusConflict {
+			t.Errorf("%q: got %d, want 409", q, w.Code)
+		}
+	}
+	// GET only.
+	if w := do(t, h, http.MethodPost, "/api/session/abc/transcript", "{}"); w.Code == http.StatusOK {
+		t.Error("POST should not be accepted")
+	}
+}

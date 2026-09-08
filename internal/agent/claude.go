@@ -343,3 +343,123 @@ func extractText(message any) string {
 	}
 	return ""
 }
+
+// Transcript reads Claude Code's .jsonl. A user line carrying only tool results
+// is the agent's own loop, not a person typing, so it does not start a new
+// turn. Image parts are noted but never inlined — they are base64 PNGs.
+func (a ClaudeCodeAgent) Transcript(s Session, opts TranscriptOptions) ([]Turn, error) {
+	path := a.primaryFile(s)
+	if path == "" {
+		return nil, errors.New("session has no conversation file")
+	}
+
+	pending := map[string]*ToolCall{}
+	var turns []Message
+	var userInput []bool
+
+	forEachLine(path, func(line string) bool {
+		var row struct {
+			Type      string `json:"type"`
+			Timestamp string `json:"timestamp"`
+			Message   struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(line), &row) != nil {
+			return true
+		}
+		if row.Type != "user" && row.Type != "assistant" {
+			return true
+		}
+
+		turn := Message{Role: row.Type}
+		if row.Timestamp != "" {
+			at := row.Timestamp
+			turn.At = &at
+		}
+		realUser := row.Type == "user"
+
+		// content is either a bare string or an array of typed parts.
+		var text string
+		if json.Unmarshal(row.Message.Content, &text) == nil {
+			turn.Text = strings.TrimSpace(text)
+			// Slash-command scaffolding is machinery, not something a person typed.
+			if strings.HasPrefix(turn.Text, "<") {
+				realUser = false
+			}
+		} else {
+			var parts []struct {
+				Type      string          `json:"type"`
+				Text      string          `json:"text"`
+				Thinking  string          `json:"thinking"`
+				ID        string          `json:"id"`
+				Name      string          `json:"name"`
+				Input     json.RawMessage `json:"input"`
+				ToolUseID string          `json:"tool_use_id"`
+				Content   json.RawMessage `json:"content"`
+			}
+			if json.Unmarshal(row.Message.Content, &parts) != nil {
+				return true
+			}
+			for _, p := range parts {
+				switch p.Type {
+				case "text":
+					turn.Text = appendBlock(turn.Text, p.Text)
+				case "thinking":
+					turn.setThinking(p.Thinking, opts.Bodies)
+				case "image":
+					turn.Text = appendBlock(turn.Text, "[image]")
+				case "tool_use":
+					args := string(p.Input)
+					call := ToolCall{Name: p.Name, Summary: summariseArgs(args, toolSummaryRunes), ArgsBytes: len(args)}
+					if opts.Bodies {
+						call.Args = readableBody(args)
+					}
+					turn.Tools = append(turn.Tools, call)
+					pending[p.ID] = &turn.Tools[len(turn.Tools)-1]
+				case "tool_result":
+					realUser = false
+					body := claudeResultText(p.Content)
+					if call, ok := pending[p.ToolUseID]; ok {
+						call.OutputBytes = len(body)
+						if opts.Bodies {
+							call.Output = readableBody(body)
+						}
+					}
+				}
+			}
+		}
+
+		turns = append(turns, turn)
+		userInput = append(userInput, realUser)
+		return true
+	})
+
+	ex := groupTurns(turns, func(i int) bool { return userInput[i] })
+	return windowTurns(ex, opts), nil
+}
+
+// claudeResultText flattens a tool_result's content, which is a string in some
+// rows and an array of parts in others.
+func claudeResultText(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &parts) != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, p := range parts {
+		if p.Type == "image" {
+			b.WriteString("[image]")
+			continue
+		}
+		b.WriteString(p.Text)
+	}
+	return b.String()
+}

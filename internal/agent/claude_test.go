@@ -42,7 +42,8 @@ func writeClaudeSession(t *testing.T, dirName, file string, lines ...string) str
 func userLine(sessionID, cwd, text string) string {
 	b, _ := json.Marshal(map[string]any{
 		"type": "user", "sessionId": sessionID, "cwd": cwd,
-		"message": map[string]any{"content": text},
+		"timestamp": "2026-09-08T10:00:00Z", // real rows always carry one
+		"message":   map[string]any{"content": text},
 	})
 	return string(b)
 }
@@ -50,7 +51,8 @@ func userLine(sessionID, cwd, text string) string {
 func assistantLine(sessionID, cwd, text string) string {
 	b, _ := json.Marshal(map[string]any{
 		"type": "assistant", "sessionId": sessionID, "cwd": cwd,
-		"message": map[string]any{"content": []any{map[string]any{"type": "text", "text": text}}},
+		"timestamp": "2026-09-08T10:00:01Z",
+		"message":   map[string]any{"content": []any{map[string]any{"type": "text", "text": text}}},
 	})
 	return string(b)
 }

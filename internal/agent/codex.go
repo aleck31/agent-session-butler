@@ -370,3 +370,104 @@ func msToTime(ms int64) time.Time {
 	}
 	return time.UnixMilli(ms)
 }
+
+// Transcript reads a Codex rollout file. Reasoning is stored encrypted, so
+// Turn.Thinking is always empty here; the injected user wrappers that Enrich
+// skips are likewise not turns a person started.
+func (a CodexAgent) Transcript(s Session, opts TranscriptOptions) ([]Turn, error) {
+	if len(s.FilePaths) == 0 {
+		return nil, errors.New("session has no rollout file")
+	}
+
+	pending := map[string]*ToolCall{}
+	var turns []Message
+	var userInput []bool
+
+	forEachLine(s.FilePaths[0], func(line string) bool {
+		var row struct {
+			Type      string `json:"type"`
+			Timestamp string `json:"timestamp"`
+			Payload   struct {
+				Type    string `json:"type"`
+				Role    string `json:"role"`
+				Name    string `json:"name"`
+				CallID  string `json:"call_id"`
+				Args    string `json:"arguments"`
+				Input   string `json:"input"`
+				Output  string `json:"output"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal([]byte(line), &row) != nil || row.Type != "response_item" {
+			return true
+		}
+		p := row.Payload
+
+		switch p.Type {
+		case "message":
+			// `developer` rows are system-injected instructions, not conversation.
+			if p.Role != "user" && p.Role != "assistant" {
+				return true
+			}
+			turn := Message{Role: p.Role}
+			if row.Timestamp != "" {
+				at := row.Timestamp
+				turn.At = &at
+			}
+			for _, c := range p.Content {
+				turn.Text = appendBlock(turn.Text, c.Text)
+			}
+			real := p.Role == "user" && !codexIsInjectedText(turn.Text)
+			turns = append(turns, turn)
+			userInput = append(userInput, real)
+
+		case "function_call", "custom_tool_call":
+			args := p.Args
+			if args == "" {
+				args = p.Input
+			}
+			call := ToolCall{Name: p.Name, Summary: summariseArgs(args, toolSummaryRunes), ArgsBytes: len(args)}
+			if opts.Bodies {
+				call.Args = readableBody(args)
+			}
+			// Tool activity attaches to the assistant turn it followed; a call with
+			// no preceding assistant message gets one of its own.
+			if len(turns) == 0 || turns[len(turns)-1].Role != "assistant" {
+				turns = append(turns, Message{Role: "assistant"})
+				userInput = append(userInput, false)
+			}
+			last := &turns[len(turns)-1]
+			last.Tools = append(last.Tools, call)
+			if p.CallID != "" {
+				pending[p.CallID] = &last.Tools[len(last.Tools)-1]
+			}
+
+		case "function_call_output", "custom_tool_call_output":
+			if call, ok := pending[p.CallID]; ok {
+				call.OutputBytes = len(p.Output)
+				if opts.Bodies {
+					call.Output = readableBody(p.Output)
+				}
+			}
+		}
+		return true
+	})
+
+	ex := groupTurns(turns, func(i int) bool { return userInput[i] })
+	return windowTurns(ex, opts), nil
+}
+
+// codexIsInjectedText reports whether a user message is one of Codex's wrappers
+// rather than something the human typed. Same rule Enrich applies.
+func codexIsInjectedText(text string) bool {
+	t := strings.TrimSpace(text)
+	for _, tag := range codexInjectedUserTags {
+		if strings.HasPrefix(t, tag) {
+			return true
+		}
+	}
+	return false
+}

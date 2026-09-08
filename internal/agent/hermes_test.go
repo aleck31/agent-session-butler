@@ -41,7 +41,8 @@ func newHermesDB(t *testing.T, path string, rows []hermesRow, routing []string) 
 	for _, stmt := range []string{
 		`CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, title TEXT, cwd TEXT,
 			message_count INTEGER, started_at REAL, ended_at REAL, archived INTEGER)`,
-		`CREATE TABLE messages (session_id TEXT, role TEXT, content TEXT)`,
+		`CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT,
+			role TEXT, content TEXT, tool_name TEXT, tool_calls TEXT, timestamp REAL)`,
 		`CREATE TABLE gateway_routing (entry_json TEXT)`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
@@ -441,4 +442,10 @@ func TestHermesScanWorksAgainstAReadOnlyFile(t *testing.T) {
 	if len(names) != 1 || names[0] != "state.db" {
 		t.Errorf("scan left files behind: %v", names)
 	}
+}
+
+// openRW opens a fixture database for writing. Production code never does this —
+// Hermes is read-only there (ADR-0001 D3); this is only for building fixtures.
+func openRW(path string) (*sql.DB, error) {
+	return sql.Open("sqlite", "file:"+path)
 }

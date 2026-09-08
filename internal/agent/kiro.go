@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -352,4 +353,118 @@ func cleanTitle(raw *string, sid string) string {
 	}
 
 	return clampTitle(t)
+}
+
+// Transcript reads Kiro's .jsonl event stream. Kiro records no per-message
+// timestamp, so Turn.At is always nil; a Prompt event is always real user input.
+func (a KiroAgent) Transcript(s Session, opts TranscriptOptions) ([]Turn, error) {
+	var jsonl string
+	for _, p := range s.FilePaths {
+		if filepath.Ext(p) == ".jsonl" {
+			jsonl = p
+			break
+		}
+	}
+	if jsonl == "" {
+		return nil, errors.New("session has no conversation file")
+	}
+
+	pending := map[string]*ToolCall{} // toolUse and its toolResult arrive separately
+	var turns []Message
+	var userAt []bool
+
+	forEachLine(jsonl, func(line string) bool {
+		var ev struct {
+			Kind string `json:"kind"`
+			Data struct {
+				Content []struct {
+					Kind string          `json:"kind"`
+					Data json.RawMessage `json:"data"`
+				} `json:"content"`
+			} `json:"data"`
+		}
+		if json.Unmarshal([]byte(line), &ev) != nil {
+			return true
+		}
+
+		if ev.Kind == "ToolResults" {
+			for _, part := range ev.Data.Content {
+				if part.Kind != "toolResult" {
+					continue
+				}
+				var tr struct {
+					ToolUseID string `json:"toolUseId"`
+					Content   []struct {
+						Data string `json:"data"`
+					} `json:"content"`
+				}
+				if json.Unmarshal(part.Data, &tr) != nil {
+					continue
+				}
+				call, ok := pending[tr.ToolUseID]
+				if !ok {
+					continue
+				}
+				var body strings.Builder
+				for _, c := range tr.Content {
+					body.WriteString(c.Data)
+				}
+				call.OutputBytes = body.Len()
+				if opts.Bodies {
+					call.Output = readableBody(body.String())
+				}
+			}
+			return true
+		}
+
+		role := ""
+		switch ev.Kind {
+		case "Prompt":
+			role = "user"
+		case "AssistantMessage":
+			role = "assistant"
+		default:
+			return true
+		}
+
+		turn := Message{Role: role}
+		for _, part := range ev.Data.Content {
+			switch part.Kind {
+			case "text":
+				var t string
+				if json.Unmarshal(part.Data, &t) == nil {
+					turn.Text = appendBlock(turn.Text, t)
+				}
+			case "thinking":
+				var t string
+				if json.Unmarshal(part.Data, &t) == nil {
+					turn.setThinking(t, opts.Bodies)
+				}
+			case "toolUse":
+				var tu struct {
+					ToolUseID string          `json:"toolUseId"`
+					Name      string          `json:"name"`
+					Input     json.RawMessage `json:"input"`
+				}
+				if json.Unmarshal(part.Data, &tu) != nil {
+					continue
+				}
+				args := string(tu.Input)
+				call := ToolCall{Name: tu.Name, Summary: summariseArgs(args, toolSummaryRunes), ArgsBytes: len(args)}
+				if opts.Bodies {
+					call.Args = readableBody(args)
+				}
+				turn.Tools = append(turn.Tools, call)
+				pending[tu.ToolUseID] = &turn.Tools[len(turn.Tools)-1]
+			}
+		}
+		turns = append(turns, turn)
+		userAt = append(userAt, role == "user")
+		return true
+	})
+
+	// Grouping and windowing happen last: a tool result can arrive several events
+	// after its call, so pending has to survive the whole stream.
+	ex := groupTurns(turns, func(i int) bool { return userAt[i] })
+	return windowTurns(ex, opts), nil
 }

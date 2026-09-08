@@ -160,3 +160,16 @@ func forEachLine(path string, handle func(line string) bool) {
 		}
 	}
 }
+
+// appendBlock joins consecutive text blocks with a blank line, so several parts
+// of one message read as paragraphs rather than running together.
+func appendBlock(existing, add string) string {
+	add = strings.TrimSpace(add)
+	if add == "" {
+		return existing
+	}
+	if existing == "" {
+		return add
+	}
+	return existing + "\n\n" + add
+}

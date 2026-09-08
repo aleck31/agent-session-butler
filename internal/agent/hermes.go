@@ -3,6 +3,7 @@ package agent
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -326,4 +327,104 @@ func unixToTime(sec float64) time.Time {
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+// Transcript reads a Hermes session's rows in order. Reasoning columns are empty
+// in practice, so Turn.Thinking is not populated. A role='tool' row is the
+// result of the preceding assistant turn's call.
+func (a HermesAgent) Transcript(s Session, opts TranscriptOptions) ([]Turn, error) {
+	dbPath, _, ok := strings.Cut(s.CacheKey, "#")
+	if !ok {
+		return nil, errors.New("session has no database reference")
+	}
+	conn, err := openRO(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	rows, err := conn.Query(`SELECT role, content, tool_name, tool_calls, timestamp
+		FROM messages WHERE session_id = ? ORDER BY id`, s.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var turns []Message
+	var userInput []bool
+	for rows.Next() {
+		var role string
+		var content, toolName, toolCalls sql.NullString
+		var ts sql.NullFloat64
+		if rows.Scan(&role, &content, &toolName, &toolCalls, &ts) != nil {
+			continue
+		}
+		body := content.String
+
+		if role == "tool" {
+			// Attach to the assistant turn that called it.
+			if len(turns) > 0 && len(turns[len(turns)-1].Tools) > 0 {
+				last := &turns[len(turns)-1]
+				call := &last.Tools[len(last.Tools)-1]
+				call.OutputBytes = len(body)
+				if opts.Bodies {
+					call.Output = readableBody(body)
+				}
+				continue
+			}
+			// Orphaned result: show it rather than dropping it silently.
+			turn := Message{Role: "assistant", Tools: []ToolCall{{
+				Name: toolName.String, Summary: summarise(body, toolSummaryRunes), OutputBytes: len(body),
+			}}}
+			if opts.Bodies {
+				turn.Tools[0].Output = readableBody(body)
+			}
+			turns = append(turns, turn)
+			userInput = append(userInput, false)
+			continue
+		}
+
+		turn := Message{Role: role, Text: strings.TrimSpace(body)}
+		if ts.Valid && ts.Float64 != 0 {
+			at := unixToTime(ts.Float64).Format(time.RFC3339)
+			turn.At = &at
+		}
+		if tc := toolCalls.String; tc != "" && tc != "null" {
+			turn.Tools = append(turn.Tools, hermesToolCalls(tc, opts.Bodies)...)
+		}
+		turns = append(turns, turn)
+		userInput = append(userInput, role == "user")
+	}
+
+	ex := groupTurns(turns, func(i int) bool { return userInput[i] })
+	return windowTurns(ex, opts), nil
+}
+
+// hermesToolCalls parses the tool_calls column, which holds the provider's own
+// JSON array; an unrecognised shape yields one opaque entry rather than nothing.
+func hermesToolCalls(raw string, bodies bool) []ToolCall {
+	var calls []struct {
+		Function struct {
+			Name string `json:"name"`
+			Args string `json:"arguments"`
+		} `json:"function"`
+		Name string `json:"name"`
+	}
+	if json.Unmarshal([]byte(raw), &calls) != nil {
+		return []ToolCall{{Name: "tool", Summary: summarise(raw, toolSummaryRunes), ArgsBytes: len(raw)}}
+	}
+	out := make([]ToolCall, 0, len(calls))
+	for _, c := range calls {
+		name := c.Function.Name
+		if name == "" {
+			name = c.Name
+		}
+		args := c.Function.Args
+		call := ToolCall{Name: name, Summary: summariseArgs(args, toolSummaryRunes), ArgsBytes: len(args)}
+		if bodies {
+			call.Args = readableBody(args)
+		}
+		out = append(out, call)
+	}
+	return out
 }

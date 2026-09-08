@@ -238,3 +238,39 @@ func TestVersionAndHelp(t *testing.T) {
 		t.Errorf("unknown command: exit %d, stderr %q", r.code, r.stderr)
 	}
 }
+
+// show's flag handling and exit codes. The window flags matter to a caller: the
+// default is bounded because a whole session reaches 97 MB.
+func TestShowUsageErrors(t *testing.T) {
+	bin, env := buildBinary(t), sandbox(t)
+	for name, args := range map[string][]string{
+		"no id":             {"show"},
+		"two ids":           {"show", "a", "b"},
+		"unknown flag":      {"show", "id", "--verbose"},
+		"tail without n":    {"show", "id", "--tail"},
+		"tail not a number": {"show", "id", "--tail", "x"},
+		"tail zero":         {"show", "id", "--tail", "0"},
+		"head negative":     {"show", "id", "--head", "-3"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := run(t, bin, env, args...)
+			if r.code != 2 {
+				t.Errorf("exit: got %d, want 2 (stderr %q)", r.code, r.stderr)
+			}
+			if strings.TrimSpace(r.stdout) != "" {
+				t.Errorf("stdout should stay clean, got %q", r.stdout)
+			}
+		})
+	}
+}
+
+func TestShowUnknownSessionExitsOne(t *testing.T) {
+	bin, env := buildBinary(t), sandbox(t)
+	r := run(t, bin, env, "show", "no-such-id")
+	if r.code != 1 {
+		t.Errorf("exit: got %d, want 1 (stderr %q)", r.code, r.stderr)
+	}
+	if !strings.Contains(r.stderr, "no-such-id") {
+		t.Errorf("stderr should name the id, got %q", r.stderr)
+	}
+}

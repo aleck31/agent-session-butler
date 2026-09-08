@@ -168,7 +168,7 @@
      be noise, since renaming is occasional. */
   .titletext.editable:hover { text-decoration: underline dotted; cursor: text; }
   .titleedit { width: 100%; font: inherit; color: var(--ink); background: var(--panel);
-    border: 1px solid var(--accent); border-radius: 4px; padding: 1px 5px; }
+    border: 1px solid var(--live); border-radius: 4px; padding: 1px 5px; }
   td.id, td.agent { color: var(--muted); }
   /* Session id doubles as a copy button: looks like the id text, flashes on copy. */
   .idcopy { font: inherit; color: var(--muted); background: none; border: none; padding: 0; cursor: pointer; }
@@ -182,6 +182,13 @@
   .placeholder, .loading { color: var(--muted); text-align: center; padding: 64px 20px; }
 
   /* ── Confirm dialog ──────────────────────────────────────────────────── */
+  .tx-think { margin-top: 4px; font-size: 11px; color: var(--faint); font-style: italic; }
+  .tx-tool { margin-top: 4px; padding-left: 14px; border-left: 2px solid var(--line); font-size: 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+  .tx-tool-name { font-family: ui-monospace, monospace; color: var(--live); }
+  .tx-tool-sum { color: var(--muted); overflow-wrap: anywhere; flex: 1; min-width: 0; }
+  .tx-tool-size { color: var(--faint); font-variant-numeric: tabular-nums; }
+  .tx-tool pre, .tx-think pre { flex-basis: 100%; margin: 4px 0 0; padding: 7px 9px; background: var(--panel-2);
+    border-radius: 4px; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; }
   .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 60;
     max-width: 70vw; padding: 9px 14px; border-radius: 6px; cursor: pointer;
     background: var(--danger-bg, #7f1d1d); color: #fff; font-size: 13px;
@@ -192,6 +199,61 @@
   .dialog p { color: var(--muted); font-size: 13px; margin: 0 0 6px; }
   .dialog .target { color: var(--ink); word-break: break-all; }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+
+  /* Transcript panel. Declared after the .dialog rules so its width and text
+     styles win — .dialog caps at 460px, which is not a reading width. */
+  /* max-width too, not just width: .dialog caps at 460px and that clamp survives
+     a width override. */
+  .dialog.tx-dialog { width: min(1180px, 96vw); max-width: min(1180px, 96vw); max-height: 92vh; display: flex; flex-direction: column; gap: 0; }
+  .tx-head { display: flex; align-items: flex-start; gap: 12px; }
+  .tx-head h2 { margin: 0 0 2px; }
+  .tx-head .btn { margin-left: auto; flex: none; }
+  .dialog .tx-sub { font-size: 12px; color: var(--muted); word-break: break-all; }
+  .tx-bar { display: flex; align-items: center; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--line); flex: none; }
+  .tx-toggle { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .tx-count { margin-left: auto; font-size: 12px; color: var(--faint); }
+  .tx-body { overflow: auto; padding: 4px 0; flex: 1; min-height: 0; }
+  .tx-empty { color: var(--muted); font-size: 13px; }
+  .tx-turn-group { padding: 4px 0 12px; }
+  .tx-turn-group + .tx-turn-group { border-top: 1px dashed var(--line); padding-top: 14px; }
+
+  /* User and agent turns are told apart by shape, not just a label: the user's
+     is inset with a solid accent edge, the agent's runs full width. */
+  .tx-msg { padding: 8px 0; }
+  .tx-msg.role-user { background: var(--panel-2); border-left: 3px solid var(--live);
+    border-radius: 0 5px 5px 0; padding: 9px 13px; margin: 8px 0; }
+  .tx-msg.role-assistant { padding-left: 3px; }
+  .tx-meta { display: flex; gap: 8px; align-items: baseline; font-size: 11px; }
+  .tx-role { font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .role-user .tx-role { color: var(--live); }
+  .tx-at { color: var(--faint); font-variant-numeric: tabular-nums; }
+  .tx-text { overflow-wrap: anywhere; font-size: 13.5px; line-height: 1.62; margin-top: 4px; }
+
+  /* Rendered markdown. Kept tight so a long transcript stays scannable. */
+  .tx-text > *:first-child { margin-top: 0; }
+  .tx-text > *:last-child { margin-bottom: 0; }
+  .dialog .tx-text p { margin: 0 0 .55em; }
+  .dialog .tx-text h1, .dialog .tx-text h2, .tx-text h3, .tx-text h4, .tx-text h5, .tx-text h6 {
+    margin: .9em 0 .35em; font-size: 1em; font-weight: 700; line-height: 1.3; }
+  .tx-text h1 { font-size: 1.18em; } .tx-text h2 { font-size: 1.1em; } .tx-text h3 { font-size: 1.04em; }
+  .tx-text ul, .tx-text ol { margin: .35em 0 .6em; padding-left: 1.5em; }
+  .tx-text li { margin: .18em 0; }
+  .tx-text code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em;
+    background: var(--panel-2); padding: .1em .35em; border-radius: 3px; }
+  .tx-text pre { margin: .5em 0; padding: 9px 11px; background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 5px; overflow-x: auto; }
+  .tx-text pre code { background: none; padding: 0; font-size: .86em; line-height: 1.5; }
+  .tx-text blockquote { margin: .5em 0; padding: .1em 0 .1em .8em; border-left: 3px solid var(--line);
+    color: var(--muted); }
+  .tx-text table { border-collapse: collapse; margin: .55em 0; font-size: .93em; display: block; overflow-x: auto; }
+  .tx-text th, .tx-text td { border: 1px solid var(--line); padding: 4px 9px; text-align: left; }
+  .tx-text th { background: var(--panel-2); font-weight: 600; }
+  .tx-text a { color: var(--live); }
+  .tx-text hr { border: 0; border-top: 1px solid var(--line); margin: .8em 0; }
+  .tx-text del { color: var(--faint); }
+
+  .tx-loadmore { display: flex; justify-content: center; padding: 14px 0 4px; }
+  .tx-exhausted { text-align: center; padding: 12px 0 4px; font-size: 12px; color: var(--faint); }
   .err { color: var(--danger); font-size: 12.5px; margin-top: 10px; white-space: pre-line; }
 
   /* Inline Lucide icons (MIT) as <use> refs — sized via em, inherit currentColor. */
@@ -212,7 +274,10 @@
 <body>
 
 <!-- Lucide icon sprite (MIT). Referenced via <use href="#i-..."> throughout. -->
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>
+  </symbol><defs>
   <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
   <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
@@ -360,6 +425,7 @@
                               x-text="copiedID === s.id ? 'copied ✓' : shortId(s.id)"></button>
                     </td>
                     <td style="text-align:right; white-space:nowrap">
+                      <button class="rowdel" @click="openTranscript(s)" title="View the conversation"><svg class="icon"><use href="#i-eye"/></svg></button>
                       <button class="rowdel" :disabled="!canRelocate(s)"
                               :title="relocateWhyNot(s) || 'Move or copy to another directory'"
                               @click="askRelocate(s)"><svg class="icon"><use href="#i-move"/></svg></button>
@@ -374,6 +440,73 @@
       </template>
     </main>
   </div>
+
+  <!-- Conversation viewer. A whole session reaches 97 MB, so it loads the last few
+       turns and fetches more only when asked. -->
+  <template x-if="tx">
+    <div class="scrim" @click.self="tx=null">
+      <div class="dialog tx-dialog">
+        <div class="tx-head">
+          <div>
+            <h2 x-text="tx.title || tx.id"></h2>
+            <div class="tx-sub" x-text="`${tx.agent} · ${tx.cwd}`"></div>
+          </div>
+          <button class="btn" @click="tx=null" title="Close">✕</button>
+        </div>
+
+        <div class="tx-bar">
+          <label class="tx-toggle"><input type="checkbox" x-model="txBodies"
+                  @change="loadTranscript(tx.id, txTail)"> tool bodies</label>
+          <span class="tx-count" x-text="`${tx.turns.length} turn${tx.turns.length===1?'':'s'} shown`"></span>
+        </div>
+
+        <div class="tx-body">
+          <template x-if="!tx.turns.length">
+            <p class="tx-empty">No conversation found in this session.</p>
+          </template>
+          <template x-for="(t, ti) in tx.turns" :key="ti">
+            <div class="tx-turn-group">
+              <!-- A turn with nothing in it is a tool-result carrier or a stripped
+                   reasoning block; rendering its label alone is just noise. -->
+              <template x-for="(m, mi) in t.messages.filter(hasContent)" :key="mi">
+                <div class="tx-msg" :class="`role-${m.role}`">
+                  <div class="tx-meta">
+                    <span class="tx-role" x-text="m.role"></span>
+                    <span class="tx-at" x-show="m.at" x-text="m.at ? fmtDate(m.at) : ''"></span>
+                  </div>
+                  <!-- Rendered from markdown. renderMarkdown escapes first and emits
+                       only a fixed tag set, so session text cannot inject markup. -->
+                  <div class="tx-text" x-show="m.text" x-html="renderMarkdown(m.text)"></div>
+                  <div class="tx-think" x-show="m.thinkingChars">
+                    <span x-text="`thinking · ${m.thinkingChars} chars`"></span>
+                    <pre x-show="m.thinking" x-text="m.thinking"></pre>
+                  </div>
+                  <template x-for="(c, ci) in (m.tools || [])" :key="ci">
+                    <div class="tx-tool">
+                      <span class="tx-tool-name" x-text="c.name"></span>
+                      <span class="tx-tool-sum" x-text="c.summary"></span>
+                      <span class="tx-tool-size" x-text="human(c.outputBytes || 0)"></span>
+                      <pre x-show="c.args" x-text="c.args"></pre>
+                      <pre x-show="c.output" x-text="c.output"></pre>
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </template>
+          <template x-if="tx.turns.length && !txExhausted">
+            <div class="tx-loadmore">
+              <button class="btn" @click="loadMore()" :disabled="txLoading"
+                      x-text="txLoading ? 'loading…' : `Load ${TX_PAGE} earlier turns`"></button>
+            </div>
+          </template>
+          <template x-if="txExhausted && tx.turns.length">
+            <div class="tx-exhausted">Beginning of the session.</div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </template>
 
   <!-- Transient error banner, for actions that have no dialog to report into -->
   <template x-if="toast">
@@ -421,6 +554,7 @@
 
 </div>
 
+<script src="md.js"></script>
 <script src="alpine.min.js" defer></script>
 <script>
 function butler() {
@@ -631,6 +765,57 @@ function butler() {
     askDeleteOne(s) {
       this.delError = '';
       this.pending = { ids: [s.id], label: s.title + '  (' + s.agent + ' · ' + s.sizeHuman + ')' };
+    },
+
+    // Conversation viewer. Loading a whole session is never the default: they reach
+    // 97 MB, and the last few turns are a fraction of a percent of that.
+    TX_PAGE: 5,     // one page of turns; matches agent.DefaultTurns
+    tx: null,
+    txTail: 5,
+    txBodies: false,
+    txLoading: false,
+    txExhausted: false,
+    hasContent(m) {
+      return !!(m.text || m.thinkingChars || (m.tools && m.tools.length));
+    },
+    openTranscript(s) {
+      this.txTail = this.TX_PAGE;
+      this.txBodies = false;
+      this.txExhausted = false;
+      this.tx = { id: s.id, title: s.title, agent: s.agent, cwd: s.cwd, turns: [] };
+      this.loadTranscript(s.id, this.txTail);
+    },
+    // Each click asks for one more page from the end. The server returns the whole
+    // window rather than a delta, so "exhausted" is when asking for more yields no
+    // more — the only way to know without a separate count endpoint.
+    loadMore() { return this.loadTranscript(this.tx.id, this.txTail + this.TX_PAGE, true); },
+    async loadTranscript(id, tail, keepPosition) {
+      this.txLoading = true;
+      const before = this.tx ? this.tx.turns.length : 0;
+      const body = document.querySelector('.tx-body');
+      const anchor = keepPosition && body ? body.scrollHeight - body.scrollTop : null;
+      try {
+        const q = new URLSearchParams({ tail: String(tail) });
+        if (this.txBodies) q.set('tools', '1');
+        const r = await fetch(`/api/session/${encodeURIComponent(id)}/transcript?` + q);
+        if (!r.ok) {
+          const b = await r.json().catch(() => ({}));
+          this.toast = b.error || `Could not read the conversation (${r.status}).`;
+          return;
+        }
+        const b = await r.json();
+        this.txTail = tail;
+        if (!this.tx || this.tx.id !== id) return;
+        this.tx = { ...this.tx, ...b };
+        this.txExhausted = b.turns.length <= before && before > 0;
+        // Earlier turns are prepended, so hold the reader's place instead of
+        // yanking them back to the top.
+        if (anchor !== null) {
+          this.$nextTick(() => { if (body) body.scrollTop = body.scrollHeight - anchor; });
+        }
+      } catch (_) {
+        this.toast = 'Network error — is the server still running?';
+      } finally { this.txLoading = false; }
     },
 
     // Inline title editing. Titles come from a session's first prompt, so several

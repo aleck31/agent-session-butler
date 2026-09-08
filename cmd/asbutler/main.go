@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -55,6 +56,8 @@ func main() {
 		cmdRelocate(args, true)
 	case "rename", "title":
 		cmdRename(args)
+	case "show", "cat":
+		cmdShow(args)
 	case "webui":
 		cmdWebUI(args)
 	case "version", "--version":
@@ -86,6 +89,9 @@ Usage:
   asbutler mv <id>... <new-cwd> Move sessions to a new working directory
   asbutler cp <id>... <new-cwd> Copy sessions to a new working directory (fresh ids)
   asbutler rename <id> <title>  Set a session's title, in the agent's own metadata
+  asbutler show <id>            Print a session's conversation (last 5 turns)
+    [--tail N|--head N|--all]   How many turns; --all can be very large
+    [--tools]                   Include full tool arguments and output
   asbutler webui [--addr host:port] [--no-open]  Open the local browser UI (default 127.0.0.1:7788)
   asbutler version              Print the version, and note a newer release
   asbutler update               Replace this binary with the latest release
@@ -573,6 +579,135 @@ func cmdUpdate(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("Updated %s to %s\n", path, rel.Tag)
+}
+
+// transcriptResult is the JSON output of show.
+type transcriptResult struct {
+	ID    string       `json:"id"`
+	Agent string       `json:"agent"`
+	Cwd   string       `json:"cwd"`
+	Title string       `json:"title"`
+	Turns []agent.Turn `json:"turns"`
+}
+
+// cmdShow prints a session's conversation. Defaults to the last few turns
+// with tool bodies folded — a whole session reaches 97 MB, so showing everything
+// has to be asked for.
+func cmdShow(args []string) {
+	human, bodies := false, false
+	opts := agent.TranscriptOptions{Tail: agent.DefaultTurns}
+	var id string
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		num := func() int {
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "show: %s needs a number\n", a)
+				os.Exit(2)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				fmt.Fprintf(os.Stderr, "show: %s needs a positive number, got %q\n", a, args[i])
+				os.Exit(2)
+			}
+			return n
+		}
+		switch {
+		case a == "-H" || a == "--human":
+			human = true
+		case a == "--tools":
+			bodies = true
+		case a == "--all":
+			opts.Tail, opts.Head = 0, 0
+		case a == "--tail":
+			opts.Tail, opts.Head = num(), 0
+		case a == "--head":
+			opts.Head, opts.Tail = num(), 0
+		case strings.HasPrefix(a, "-"):
+			fmt.Fprintf(os.Stderr, "show: unknown flag %q\n", a)
+			os.Exit(2)
+		default:
+			if id != "" {
+				fmt.Fprintln(os.Stderr, "show: takes one session id")
+				os.Exit(2)
+			}
+			id = a
+		}
+	}
+	if id == "" {
+		fmt.Fprintln(os.Stderr, "show: usage: asbutler show <session-id> [--tail N|--head N|--all] [--tools]")
+		os.Exit(2)
+	}
+	opts.Bodies = bodies
+
+	sess, turns, err := store.New().TranscriptByID(id, opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "show: %v\n", err)
+		os.Exit(1)
+	}
+
+	if human {
+		printTranscript(sess, turns, bodies)
+		return
+	}
+	writeJSON(transcriptResult{
+		ID: sess.ID, Agent: sess.Agent, Cwd: sess.Cwd, Title: sess.Title,
+		Turns: turns,
+	})
+}
+
+// printTranscript renders the readable form: one block per turn, tools as a
+// single indented line each unless bodies were requested.
+func printTranscript(sess agent.Session, turns []agent.Turn, bodies bool) {
+	fmt.Printf("%s  (%s · %s)\n%s\n\n", sess.Title, sess.Agent, store.HumanSize(sess.FileSize), sess.Cwd)
+	if len(turns) == 0 {
+		fmt.Println("(no conversation found)")
+		return
+	}
+	for i, ex := range turns {
+		if i > 0 {
+			fmt.Println(strings.Repeat("─", 60))
+		}
+		for _, t := range ex.Messages {
+			label := map[string]string{"user": "you ", "assistant": "asst", "system": "sys "}[t.Role]
+			if label == "" {
+				label = t.Role
+			}
+			when := ""
+			if t.At != nil {
+				if ts, err := time.Parse(time.RFC3339, *t.At); err == nil {
+					when = "  " + ts.Local().Format("15:04:05")
+				}
+			}
+			if t.Text != "" {
+				fmt.Printf("▸ %s%s  %s\n", label, when, indentBody(t.Text, "         "))
+			}
+			if t.ThinkingChars > 0 {
+				if bodies && t.Thinking != "" {
+					fmt.Printf("  · thinking (%d chars)  %s\n", t.ThinkingChars, indentBody(t.Thinking, "        "))
+				} else {
+					fmt.Printf("  · thinking (%d chars)\n", t.ThinkingChars)
+				}
+			}
+			for _, c := range t.Tools {
+				fmt.Printf("  ⤷ %-12s %-48s %8s\n", c.Name, c.Summary, store.HumanSize(int64(c.OutputBytes)))
+				if bodies {
+					if c.Args != "" {
+						fmt.Printf("      args: %s\n", indentBody(c.Args, "            "))
+					}
+					if c.Output != "" {
+						fmt.Printf("      out:  %s\n", indentBody(c.Output, "            "))
+					}
+				}
+			}
+		}
+	}
+}
+
+// indentBody keeps a multi-line body aligned under its label.
+func indentBody(s, pad string) string {
+	return strings.ReplaceAll(strings.TrimSpace(s), "\n", "\n"+pad)
 }
 
 func cmdWebUI(args []string) {

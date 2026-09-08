@@ -8,13 +8,18 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"strconv"
 	"strings"
 
+	"github.com/aleck/agent-session-butler/internal/agent"
 	"github.com/aleck/agent-session-butler/internal/store"
 	"github.com/aleck/agent-session-butler/internal/view"
 )
 
-//go:embed web
+// Only the files the UI serves. A bare `embed web` would also ship md_test.mjs
+// and the directory's README, and the static handler would serve them.
+//
+//go:embed web/index.html web/alpine.min.js web/md.js
 var webFS embed.FS
 
 // Server holds the store and routing.
@@ -38,6 +43,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/session/{id}", s.handleDelete)
 	s.mux.HandleFunc("POST /api/session/{id}/relocate", s.handleRelocate)
 	s.mux.HandleFunc("POST /api/session/{id}/rename", s.handleRename)
+	s.mux.HandleFunc("GET /api/session/{id}/transcript", s.handleTranscript)
 
 	// Static UI from the embedded web/ dir, served at the root.
 	sub, _ := fs.Sub(webFS, "web")
@@ -128,6 +134,33 @@ func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"title": title})
+}
+
+// handleTranscript returns a session's conversation. Query: tail/head (turns,
+// default agent.DefaultTurns), tools=1 for full bodies. Bounded by default
+// because a whole session reaches 97 MB.
+func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	opts := agent.TranscriptOptions{Tail: agent.DefaultTurns, Bodies: q.Get("tools") != ""}
+	if q.Get("all") != "" {
+		opts.Tail = 0
+	}
+	if n, err := strconv.Atoi(q.Get("tail")); err == nil && n > 0 {
+		opts.Tail, opts.Head = n, 0
+	}
+	if n, err := strconv.Atoi(q.Get("head")); err == nil && n > 0 {
+		opts.Head, opts.Tail = n, 0
+	}
+
+	sess, turns, err := s.store.TranscriptByID(r.PathValue("id"), opts)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": sess.ID, "agent": sess.Agent, "title": sess.Title,
+		"cwd": sess.Cwd, "turns": turns,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
