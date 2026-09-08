@@ -77,7 +77,9 @@ asbutler rename <id> <title>  # set a session's title, in the agent's own metada
 asbutler webui                # open the browser UI (default http://127.0.0.1:7788)
 asbutler webui --addr :8080   # bind a different host:port
 asbutler webui --no-open      # start the server without opening a browser
-asbutler version              # print the version
+asbutler update               # replace this binary with the latest release
+asbutler update --check       # report whether a newer release exists, install nothing
+asbutler version              # print the version, and note a newer release
 asbutler help
 ```
 
@@ -95,6 +97,14 @@ go test ./internal/store/ -bench Scan -benchtime 5x -run '^$'   # whole scan, co
 ```
 
 Note: before 0.6.1 `list` had no path filter and always returned every session. Pass `--all` for that behaviour. Since 0.6.2 an unrecognised flag is an error rather than being silently ignored — a typo like `--paths ~/foo` used to fall back to the current directory and quietly return the wrong scope.
+
+### Updating
+
+`asbutler update` downloads the release asset for your platform and replaces the running binary. It stages the download beside the target and renames it into place, and runs the new binary's own `version` before trusting it — so a truncated or wrong-platform download fails while the working binary is still there. A build newer than the latest release reports that and stops, rather than downgrading itself.
+
+`asbutler version` also mentions a newer release when there is one. That check is bounded to one network call per day with a three-second timeout, and is silent on any failure — `version` works offline. Set `ASBUTLER_NO_UPDATE_CHECK=1` to switch it off. `list` never checks: its output is parsed by other tools, so it stays purely local.
+
+While the repo is private both paths need the GitHub CLI, for the same reason `install.sh` does.
 
 ### Renaming
 

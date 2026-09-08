@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -16,8 +17,10 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/aleck/agent-session-butler/internal/agent"
 	"github.com/aleck/agent-session-butler/internal/server"
 	"github.com/aleck/agent-session-butler/internal/store"
+	"github.com/aleck/agent-session-butler/internal/update"
 	"github.com/aleck/agent-session-butler/internal/view"
 )
 
@@ -30,9 +33,10 @@ func writeJSON(v any) {
 }
 
 // version is the release version, printed by `asbutler version`.
-const version = "0.7.3"
+const version = "0.7.4"
 
 func main() {
+	agent.Version = version // one authoritative version, shared with agents we call
 	args := os.Args[1:]
 	cmd := "list"
 	if len(args) > 0 {
@@ -54,7 +58,9 @@ func main() {
 	case "webui":
 		cmdWebUI(args)
 	case "version", "--version":
-		fmt.Printf("asbutler v%s\n", version)
+		cmdVersion()
+	case "update", "upgrade":
+		cmdUpdate(args)
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 	default:
@@ -81,7 +87,8 @@ Usage:
   asbutler cp <id>... <new-cwd> Copy sessions to a new working directory (fresh ids)
   asbutler rename <id> <title>  Set a session's title, in the agent's own metadata
   asbutler webui [--addr host:port] [--no-open]  Open the local browser UI (default 127.0.0.1:7788)
-  asbutler version              Print the version
+  asbutler version              Print the version, and note a newer release
+  asbutler update               Replace this binary with the latest release
   asbutler help                 Show this help
 
 `)
@@ -500,6 +507,72 @@ func cmdRename(args []string) {
 	if err != nil {
 		os.Exit(1)
 	}
+}
+
+// cmdVersion prints the version and, at most once a day, mentions a newer
+// release. The check is best-effort and silent on failure: `version` must work
+// offline. Never do this in `list` — its output is parsed by other tools.
+func cmdVersion() {
+	fmt.Printf("asbutler v%s\n", version)
+	if rel, ok := update.Available(version); ok {
+		fmt.Printf("\nA newer release is available: %s\n  %s\n  run `asbutler update` to install it\n",
+			rel.Tag, rel.URL)
+	}
+}
+
+// cmdUpdate replaces the running binary with the latest release.
+func cmdUpdate(args []string) {
+	check := false
+	for _, a := range args {
+		switch a {
+		case "--check", "-n":
+			check = true
+		default:
+			fmt.Fprintf(os.Stderr, "update: unknown flag %q\n", a)
+			os.Exit(2)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	rel, err := update.LatestRelease(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "update: could not reach the releases: %v\n", err)
+		os.Exit(1)
+	}
+	latest, err := update.ParseVersion(rel.Tag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "update: latest release %q is not a version\n", rel.Tag)
+		os.Exit(1)
+	}
+	cur, err := update.ParseVersion(version)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "update: this build's version %q is not a version\n", version)
+		os.Exit(1)
+	}
+
+	switch {
+	case latest.Newer(cur):
+		fmt.Printf("v%s → %s\n  %s\n", cur, rel.Tag, rel.URL)
+	case cur.Newer(latest):
+		// A source build ahead of the last release; downloading would go backwards.
+		fmt.Printf("Already newer than the latest release (v%s > %s); nothing to do.\n", cur, rel.Tag)
+		return
+	default:
+		fmt.Printf("Already on the latest release (v%s).\n", cur)
+		return
+	}
+	if check {
+		return
+	}
+
+	path, err := update.Apply(ctx, rel.Tag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "update: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Updated %s to %s\n", path, rel.Tag)
 }
 
 func cmdWebUI(args []string) {
