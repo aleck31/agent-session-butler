@@ -245,7 +245,7 @@ func (s *Store) findSession(id, store, path string) (Group, agent.Session, error
 }
 
 // findAll returns every session matching the id, optionally narrowed by store and
-// cwd (which should already be through ResolvePath). Separate from findSession
+// cwd (which should already be through ExpandPath). Separate from findSession
 // because a delete has to see all the matches: for Kiro's v1 store one id can name
 // several conversations and its CLI removes them together.
 func (s *Store) findAll(id, store, path string) ([]agent.Session, []Group) {

@@ -33,7 +33,7 @@ func writeJSON(v any) {
 }
 
 // version is the release version, printed by `asbutler version`.
-const version = "0.8.2"
+const version = "0.8.3"
 
 func main() {
 	agent.Version = version // one authoritative version, shared with agents we call
@@ -186,7 +186,7 @@ func cmdList(args []string) {
 	// Narrow before enriching: enrichment reads every session file to count
 	// messages, so scoping first is the difference between seconds and minutes.
 	if pathFilter != "" {
-		want, err := store.ResolvePath(pathFilter)
+		want, err := store.ExpandPath(pathFilter)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "list: %s: %v\n", pathFilter, err)
 			os.Exit(2)
@@ -351,7 +351,7 @@ func takeSelectorFlags(cmd string, args []string) (rest []string, store, path st
 
 // resolveSelectorPath resolves a --path value the same way the list filter does.
 func resolveSelectorPath(cmd, path string) (string, error) {
-	resolved, err := store.ResolvePath(path)
+	resolved, err := store.ExpandPath(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %s: %v\n", cmd, path, err)
 	}

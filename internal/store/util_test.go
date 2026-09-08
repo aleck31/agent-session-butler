@@ -53,23 +53,13 @@ func TestHumanSize(t *testing.T) {
 	}
 }
 
-func TestResolvePathExpandsTilde(t *testing.T) {
+func TestExpandPathExpandsTilde(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	// t.TempDir() can sit under a symlink (macOS /var → /private/var), and
-	// ResolvePath resolves symlinks, so compare against the resolved home.
-	wantHome, err := filepath.EvalSymlinks(home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Symlink resolution only applies to paths that exist, so create the targets.
-	if err := os.MkdirAll(filepath.Join(home, "a", "b"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(home, "proj"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// Expansion is textual: HOME goes in as it is, symlinks and all, and the target
+	// need not exist.
+	wantHome := home
 
 	for _, tc := range []struct{ in, want string }{
 		{"~", wantHome},
@@ -77,84 +67,88 @@ func TestResolvePathExpandsTilde(t *testing.T) {
 		{"~/proj", filepath.Join(wantHome, "proj")},
 		{"~/a/b", filepath.Join(wantHome, "a", "b")},
 	} {
-		got, err := ResolvePath(tc.in)
+		got, err := ExpandPath(tc.in)
 		if err != nil {
-			t.Fatalf("ResolvePath(%q): %v", tc.in, err)
+			t.Fatalf("ExpandPath(%q): %v", tc.in, err)
 		}
 		if got != tc.want {
-			t.Errorf("ResolvePath(%q) = %q, want %q", tc.in, got, tc.want)
+			t.Errorf("ExpandPath(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }
 
 // "~notme" is a literal directory name, not a home-directory reference.
-func TestResolvePathLeavesBareTildePrefixAlone(t *testing.T) {
-	got, err := ResolvePath("~notahome")
+func TestExpandPathLeavesBareTildePrefixAlone(t *testing.T) {
+	got, err := ExpandPath("~notahome")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if filepath.Base(got) != "~notahome" {
-		t.Errorf("ResolvePath(%q) = %q, want it treated as a literal name", "~notahome", got)
+		t.Errorf("ExpandPath(%q) = %q, want it treated as a literal name", "~notahome", got)
 	}
 }
 
-func TestResolvePathMakesRelativeAbsolute(t *testing.T) {
-	got, err := ResolvePath(".")
+func TestExpandPathMakesRelativeAbsolute(t *testing.T) {
+	got, err := ExpandPath(".")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !filepath.IsAbs(got) {
-		t.Errorf("ResolvePath(%q) = %q, want an absolute path", ".", got)
+		t.Errorf("ExpandPath(%q) = %q, want an absolute path", ".", got)
 	}
 }
 
-// Resolution is best-effort: a path that no longer exists still resolves to its
-// absolute form, so orphaned directories stay queryable.
-func TestResolvePathKeepsNonexistentPathsQueryable(t *testing.T) {
+// A path that no longer exists still expands to its absolute form, so orphaned
+// directories stay queryable.
+func TestExpandPathKeepsNonexistentPathsQueryable(t *testing.T) {
 	gone := filepath.Join(t.TempDir(), "deleted", "project")
-	got, err := ResolvePath(gone)
+	got, err := ExpandPath(gone)
 	if err != nil {
-		t.Fatalf("resolvePath: %v", err)
+		t.Fatalf("ExpandPath: %v", err)
 	}
 	if !filepath.IsAbs(got) {
-		t.Errorf("ResolvePath(%q) = %q, want an absolute path", gone, got)
+		t.Errorf("ExpandPath(%q) = %q, want an absolute path", gone, got)
 	}
 }
 
-// An agent may have recorded an unresolved path (macOS /tmp/x vs /private/tmp/x)
-// while the user asks with the other form — both must match.
-func TestSamePathToleratesSymlinks(t *testing.T) {
+// A symlink and its target are two spellings, and each keeps its own session list —
+// the agents key on the literal path they recorded, so merging them made a query for
+// either spelling return the union of both.
+func TestSamePathDistinguishesASymlinkFromItsTarget(t *testing.T) {
 	real := t.TempDir()
 	link := filepath.Join(t.TempDir(), "link")
 	if err := os.Symlink(real, link); err != nil {
 		t.Skipf("cannot create a symlink here: %v", err)
 	}
-	resolvedReal, err := filepath.EvalSymlinks(real)
+
+	wantLink, err := ExpandPath(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantReal, err := ExpandPath(real)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// The user asks via the symlink; the agent recorded the real path.
-	want, err := ResolvePath(link)
-	if err != nil {
-		t.Fatal(err)
+	// Each spelling matches itself...
+	if !SamePath(link, wantLink) {
+		t.Errorf("SamePath(%q, %q) = false, want true", link, wantLink)
 	}
-	if !SamePath(resolvedReal, want) {
-		t.Errorf("SamePath(%q, %q) = false, want true", resolvedReal, want)
+	if !SamePath(real, wantReal) {
+		t.Errorf("SamePath(%q, %q) = false, want true", real, wantReal)
 	}
-	// And the reverse: the agent recorded the symlink path.
-	want2, err := ResolvePath(real)
-	if err != nil {
-		t.Fatal(err)
+	// ...and not the other, so the two session lists stay apart.
+	if SamePath(real, wantLink) {
+		t.Errorf("SamePath(%q, %q) = true — the target must not answer a query for the link", real, wantLink)
 	}
-	if !SamePath(link, want2) {
-		t.Errorf("SamePath(%q, %q) = false, want true", link, want2)
+	if SamePath(link, wantReal) {
+		t.Errorf("SamePath(%q, %q) = true — the link must not answer a query for the target", link, wantReal)
 	}
 }
 
 func TestSamePathIgnoresTrailingSlashAndDotSegments(t *testing.T) {
 	dir := t.TempDir()
-	want, err := ResolvePath(dir)
+	want, err := ExpandPath(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +167,7 @@ func TestSamePathDoesNotMatchSubtree(t *testing.T) {
 	if err := os.Mkdir(child, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	wantParent, err := ResolvePath(parent)
+	wantParent, err := ExpandPath(parent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +178,7 @@ func TestSamePathDoesNotMatchSubtree(t *testing.T) {
 
 // The placeholder cwd is not a real path and must never match a directory query.
 func TestSamePathRejectsUnknownPlaceholder(t *testing.T) {
-	want, err := ResolvePath(t.TempDir())
+	want, err := ExpandPath(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
