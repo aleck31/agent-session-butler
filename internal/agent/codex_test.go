@@ -445,3 +445,18 @@ func TestClampTitle(t *testing.T) {
 		t.Errorf("clampTitle(long) = %d runes, want 81 ending in an ellipsis", len([]rune(got)))
 	}
 }
+
+// The version reported to Codex must come from the build, not a literal that has
+// to be remembered at release time.
+func TestVersionIsNotHardcoded(t *testing.T) {
+	if Version == "" {
+		t.Error("agent.Version is empty; main should set it")
+	}
+	data, err := os.ReadFile("codex.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"version": "0.`) {
+		t.Error("codex.go hardcodes a version string; use agent.Version")
+	}
+}

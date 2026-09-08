@@ -298,7 +298,7 @@ func codexSetThreadName(threadID, title string) error {
 		return err
 	}
 	if err := send(1, "initialize", map[string]any{
-		"clientInfo": map[string]any{"name": "asbutler", "version": "0.7.3"},
+		"clientInfo": map[string]any{"name": "asbutler", "version": Version},
 	}); err != nil {
 		return err
 	}
