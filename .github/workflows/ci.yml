@@ -3,8 +3,8 @@ name: CI
 # Linux only, on purpose. Go cross-compiles without the target platform, and the
 # SQLite driver is pure Go (CGO off), so every release binary can be produced
 # here — and on a private repo a macOS runner costs roughly 10x a Linux one for
-# coverage of two small build-tagged branches. The trade-off is recorded in
-# .dev/known-gaps.md: the darwin/windows paths get a compile check, not a test run.
+# coverage of two small build-tagged branches. The trade-off: the darwin/windows
+# paths get a compile check, not a test run. See "CI" in README.md.
 on:
   push:
     branches: [master]
@@ -25,8 +25,8 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # One script, called by CI and by the pre-push hook, so a local pass and a
-      # CI pass mean the same thing. Divergence is how a local check quietly stops
+      # The same script you run locally before pushing, so a local pass and a CI
+      # pass mean the same thing. Divergence is how a local check quietly stops
       # being worth running.
       - name: checks
         run: ./scripts/check.sh --quick

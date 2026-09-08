@@ -9,7 +9,7 @@
 # Run it before pushing. There is deliberately no git hook: on this machine
 # core.hooksPath is claimed at system level by git-defender, and pointing it at a
 # repo-local directory silently disables that — secret scanning included. See
-# .dev/known-gaps.md.
+# "CI" in README.md.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

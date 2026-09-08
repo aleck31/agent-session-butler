@@ -218,7 +218,7 @@ Two workflows under `.github/workflows/`:
 - **CI** (push to master, PRs): runs `scripts/check.sh`, plus a per-target build matrix so a failure names the platform.
 - **Release** (on a `v*` tag): builds the five assets `install.sh` expects and publishes them.
 
-Both run on Linux only. Go cross-compiles without the target platform and the SQLite driver is pure Go (CGO off), so every release binary is produced there; a macOS runner would cost roughly ten times as much on a private repo for coverage of two small build-tagged branches. The trade-off — those branches are compile-checked, not behaviour-tested — is recorded in the development notes.
+Both run on Linux only. Go cross-compiles without the target platform and the SQLite driver is pure Go (CGO off), so every release binary is produced there; a macOS runner would cost roughly ten times as much on a private repo for coverage of two small build-tagged branches. The trade-off is that `lock_unix.go` and `lock_windows.go` are compile-checked on every target but behaviour-tested only on Linux, so a live-PID check that compiles yet misbehaves on macOS or Windows would ship. Worth revisiting if this repo goes public, where those runners are free.
 
 The release job refuses to publish when the tag disagrees with `const version` in `cmd/asbutler/main.go`, since `install.sh` compares those two to decide whether to download or build. Release notes are generated from the commit history; replace them with `gh release edit <tag> --notes-file notes.md` when a release deserves a written summary.
 
