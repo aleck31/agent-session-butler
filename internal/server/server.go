@@ -88,9 +88,21 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing session id")
 		return
 	}
-	// store narrows an id that appears in more than one of an agent's stores.
-	if err := s.store.DeleteByID(id, r.URL.Query().Get("store")); err != nil {
+	// store and path narrow an id that appears in more than one store, or more than
+	// once within a store; allWithID confirms a delete the agent can only do as a set.
+	q := r.URL.Query()
+	removed, err := s.store.DeleteByID(id, q.Get("store"), q.Get("path"), q.Get("allWithID") != "")
+	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if len(removed) > 1 {
+		// More went than was named, so say what — the caller's list is staler than it knows.
+		dirs := make([]string, 0, len(removed))
+		for _, sess := range removed {
+			dirs = append(dirs, sess.Cwd)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"removed": len(removed), "cwds": dirs})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -104,12 +116,13 @@ func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
 		NewCwd string `json:"newCwd"`
 		Copy   bool   `json:"copy"`
 		Store  string `json:"store"`
+		Path   string `json:"path"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NewCwd == "" {
 		writeError(w, http.StatusBadRequest, "expected JSON body with a non-empty \"newCwd\"")
 		return
 	}
-	newID, resolved, err := s.store.RelocateByID(id, req.Store, req.NewCwd, req.Copy)
+	newID, resolved, err := s.store.RelocateByID(id, req.Store, req.Path, req.NewCwd, req.Copy)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -126,12 +139,13 @@ func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Title string `json:"title"`
 		Store string `json:"store"`
+		Path  string `json:"path"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Title) == "" {
 		writeError(w, http.StatusBadRequest, "expected JSON body with a non-empty \"title\"")
 		return
 	}
-	title, err := s.store.RenameByID(id, req.Store, req.Title)
+	title, err := s.store.RenameByID(id, req.Store, req.Path, req.Title)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -155,7 +169,7 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 		opts.Head, opts.Tail = n, 0
 	}
 
-	sess, turns, err := s.store.TranscriptByID(r.PathValue("id"), q.Get("store"), opts)
+	sess, turns, err := s.store.TranscriptByID(r.PathValue("id"), q.Get("store"), q.Get("path"), opts)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return

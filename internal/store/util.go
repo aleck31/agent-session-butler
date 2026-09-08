@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -75,4 +76,38 @@ func HumanSize(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// ResolvePath turns a user-supplied path into the absolute, symlink-resolved
+// form that groups are keyed by. Resolution is best-effort: a path that no
+// longer exists still resolves to its absolute form so orphans stay queryable.
+func ResolvePath(p string) (string, error) {
+	abs, err := ExpandPath(p)
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved, nil
+	}
+	return abs, nil
+}
+
+// SamePath reports whether a group's cwd is the directory the user asked for,
+// tolerating symlinks (macOS /tmp) and case-insensitive filesystems.
+func SamePath(groupCwd, want string) bool {
+	if pathEqual(filepath.Clean(groupCwd), want) {
+		return true
+	}
+	// The agent may have recorded an unresolved path (/tmp/x vs /private/tmp/x).
+	if resolved, err := filepath.EvalSymlinks(groupCwd); err == nil {
+		return pathEqual(resolved, want)
+	}
+	return false
+}
+
+func pathEqual(a, b string) bool {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }

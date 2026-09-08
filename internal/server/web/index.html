@@ -544,7 +544,11 @@
         <div class="err" x-show="delError" x-text="delError"></div>
         <div class="dialog-actions">
           <button class="btn" @click="pending=null" :disabled="deleting">Cancel</button>
-          <button class="btn btn-danger" @click="confirmDelete()" :disabled="deleting"
+          <!-- Offered only after the agent refused: its delete takes every conversation
+               sharing the id, so this is the one path that can proceed. -->
+          <button class="btn btn-danger" x-show="pending.canForce" @click="confirmDeleteAll()"
+                  :disabled="deleting" x-text="deleting ? 'deleting…' : 'Delete all with this id'"></button>
+          <button class="btn btn-danger" x-show="!pending.canForce" @click="confirmDelete()" :disabled="deleting"
                   x-text="deleting ? 'deleting…' : 'Delete permanently'"></button>
         </div>
       </div>
@@ -587,6 +591,9 @@ function butler() {
     skey(s) { return s.id + '\u0000' + (s.store || ''); },
     unkey(k) { const [id, store] = k.split('\u0000'); return { id, store: store || '' }; },
     storeQuery(s) { return s.store ? '?store=' + encodeURIComponent(s.store) : ''; },
+    // The cwd on show: within one store an id can name a different conversation
+    // under another directory, and the UI always knows which one it is looking at.
+    selPath() { return this.selected?.cwd || ''; },
     toast: '',        // transient error text, for actions with no dialog of their own
     sort: { key: 'modifiedAt', dir: 'desc' },
     pending: null, deleting: false, delError: '',
@@ -830,6 +837,7 @@ function butler() {
         const q = new URLSearchParams({ tail: String(tail) });
         if (this.txBodies) q.set('tools', '1');
         if (this.tx?.store) q.set('store', this.tx.store);
+        if (this.selPath()) q.set('path', this.selPath());
         const r = await fetch(`/api/session/${encodeURIComponent(id)}/transcript?` + q);
         if (!r.ok) {
           const b = await r.json().catch(() => ({}));
@@ -866,7 +874,7 @@ function butler() {
       try {
         const r = await fetch('/api/session/' + encodeURIComponent(s.id) + '/rename', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title, store: s.store || '' }),
+          body: JSON.stringify({ title, store: s.store || '', path: this.selPath() }),
         });
         if (r.ok) {
           const b = await r.json().catch(() => ({}));
@@ -931,7 +939,7 @@ function butler() {
         try {
           const r = await fetch('/api/session/' + encodeURIComponent(id) + '/relocate', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ newCwd: cwd, copy: asCopy, store }),
+            body: JSON.stringify({ newCwd: cwd, copy: asCopy, store, path: this.selPath() }),
           });
           if (!r.ok) {
             const b = await r.json().catch(() => ({}));
@@ -959,25 +967,47 @@ function butler() {
       if (!this.pending) return;
       this.deleting = true; this.delError = '';
       const failed = [];
+      let shared = false;
       for (const key of this.pending.ids) {
         const { id, store } = this.unkey(key);
+        const q = new URLSearchParams();
+        if (store) q.set('store', store);
+        if (this.selPath()) q.set('path', this.selPath());
+        if (this.pending.allWithID) q.set('allWithID', '1');
         try {
-          const r = await fetch('/api/session/' + encodeURIComponent(id) +
-            (store ? '?store=' + encodeURIComponent(store) : ''), { method: 'DELETE' });
-          if (r.status === 204) this.applyDeleted(key);
-          else { const b = await r.json().catch(() => ({})); failed.push(`${this.shortId(id)}: ${b.error || r.status}`); }
+          const r = await fetch('/api/session/' + encodeURIComponent(id) + '?' + q, { method: 'DELETE' });
+          if (r.status === 204) { this.applyDeleted(key); continue; }
+          const b = await r.json().catch(() => ({}));
+          if (r.ok) {
+            // The agent took every conversation with this id, so drop them all.
+            for (const cwd of b.cwds || []) this.applyDeleted(key, cwd);
+            continue;
+          }
+          // Only an explicit confirmation can proceed, since no narrowing removes one.
+          if ((b.error || '').includes('--all-with-id')) shared = true;
+          failed.push(`${this.shortId(id)}: ${b.error || r.status}`);
         } catch (_) { failed.push(`${this.shortId(id)}: network error`); }
       }
       this.deleting = false;
-      if (failed.length) this.delError = 'Some deletes failed:\n' + failed.join('\n');
-      else this.pending = null;
+      if (failed.length) {
+        this.delError = 'Some deletes failed:\n' + failed.join('\n');
+        if (shared) this.pending.canForce = true;
+      } else this.pending = null;
+    },
+    // Re-run the delete with the confirmation the agent's id-wide delete requires.
+    confirmDeleteAll() {
+      this.pending.allWithID = true;
+      this.pending.canForce = false;
+      return this.confirmDelete();
     },
 
     // Remove a deleted session locally and keep the rollup + selection truthful.
-    applyDeleted(key) {
+    applyDeleted(key, cwd) {
       const { id, store } = this.unkey(key);
       const same = x => x.id === id && (x.store || '') === store;
-      const g = this.summary.groups.find(x => (x.sessions || []).some(same));
+      const g = cwd
+        ? this.summary.groups.find(x => x.cwd === cwd && (x.sessions || []).some(same))
+        : this.summary.groups.find(x => (x.sessions || []).some(same));
       if (!g) return;
       const s = g.sessions.find(same);
       g.sessions = g.sessions.filter(x => !same(x));

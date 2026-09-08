@@ -92,16 +92,23 @@ func (a KiroAgent) scanV1() []Session {
 			ModifiedAt:   msToTime(ms),
 			// v1 is not a live store — Kiro copies out of it rather than writing to
 			// it — so there is no lock to check.
-			Locked:   false,
-			CacheKey: dbPath + "#v1#" + id,
-			Extra:    map[string]string{"store": kiroStoreV1, "db": dbPath},
+			Locked: false,
+			// v1's primary key is (key, conversation_id), so the cwd belongs in the
+			// cache key too: the same id under another cwd is a different conversation.
+			CacheKey: dbPath + "#v1#" + c + "#" + id,
+			// deleteScope marks that Kiro's CLI deletes v1 by id alone, so several
+			// conversations sharing an id can only go together.
+			Extra: map[string]string{"store": kiroStoreV1, "db": dbPath,
+				"key": cwd.String, "deleteScope": "id"},
 		})
 	}
 	return out
 }
 
 // kiroV1Blob fetches one v1 conversation's JSON. Separate from scanning because
-// it is the expensive part: hundreds of KB per session.
+// it is the expensive part: hundreds of KB per session. Keyed on (key, id) to
+// match the table's primary key — on id alone a duplicated id returns whichever
+// row SQLite reaches first, which is a different conversation half the time.
 func kiroV1Blob(s Session) (map[string]json.RawMessage, error) {
 	dbPath := s.Extra["db"]
 	if dbPath == "" {
@@ -114,8 +121,8 @@ func kiroV1Blob(s Session) (map[string]json.RawMessage, error) {
 	defer conn.Close()
 
 	var raw string
-	if err := conn.QueryRow(`SELECT value FROM conversations_v2 WHERE conversation_id = ?`,
-		s.ID).Scan(&raw); err != nil {
+	if err := conn.QueryRow(`SELECT value FROM conversations_v2 WHERE key = ? AND conversation_id = ?`,
+		s.Extra["key"], s.ID).Scan(&raw); err != nil {
 		return nil, err
 	}
 	var blob map[string]json.RawMessage

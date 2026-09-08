@@ -266,3 +266,95 @@ func TestKiroV1ModifiedAtFallsBackToCreated(t *testing.T) {
 		t.Errorf("modifiedAt: got %d, want created_at", got)
 	}
 }
+
+// The table's primary key is (key, conversation_id), so one id can hold two
+// unrelated conversations. Keying the blob lookup on the id alone returned
+// whichever row SQLite reached first, which mislabelled both.
+func TestKiroV1SameIDUnderTwoCwds(t *testing.T) {
+	home := t.TempDir()
+	path := kiroDBPathIn(t, home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE conversations_v2 (key TEXT NOT NULL,
+		conversation_id TEXT NOT NULL, value TEXT NOT NULL,
+		created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+		PRIMARY KEY (key, conversation_id))`); err != nil {
+		t.Fatal(err)
+	}
+	const id = "shared-id"
+	// Two conversations, same id, different cwds and different lengths.
+	want := map[string]struct {
+		prompts []string
+		count   int
+	}{
+		"/proj/short": {[]string{"only question"}, 2},
+		"/proj/long":  {[]string{"first", "second", "third"}, 6},
+	}
+	for cwd, w := range want {
+		var history []any
+		for _, p := range w.prompts {
+			history = append(history, v1Prompt(p))
+		}
+		blob, err := json.Marshal(map[string]any{"conversation_id": id, "history": history})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO conversations_v2 VALUES (?,?,?,?,?)`,
+			cwd, id, string(blob), 1000, 2000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	a := KiroAgent{}
+	sessions := a.scanV1()
+	if len(sessions) != 2 {
+		t.Fatalf("scanned %d sessions, want 2 — both rows are real conversations", len(sessions))
+	}
+	// Distinct cache keys, or enrichment of one would be served for the other.
+	if sessions[0].CacheKey == sessions[1].CacheKey {
+		t.Errorf("both rows share the cache key %q", sessions[0].CacheKey)
+	}
+
+	for _, s := range sessions {
+		w, ok := want[s.Cwd]
+		if !ok {
+			t.Fatalf("unexpected cwd %q", s.Cwd)
+		}
+		got := a.enrichV1(s)
+		if got.MessageCount == nil || *got.MessageCount != w.count {
+			t.Errorf("%s: message count = %v, want %d", s.Cwd, got.MessageCount, w.count)
+		}
+		if got.Title != w.prompts[0] {
+			t.Errorf("%s: title = %q, want %q", s.Cwd, got.Title, w.prompts[0])
+		}
+		turns, err := a.transcriptV1(s, TranscriptOptions{})
+		if err != nil {
+			t.Fatalf("%s: transcript: %v", s.Cwd, err)
+		}
+		if len(turns) != len(w.prompts) {
+			t.Errorf("%s: %d turns, want %d", s.Cwd, len(turns), len(w.prompts))
+		}
+	}
+}
+
+// Deleting v1 goes through Kiro's CLI, which takes the id and ignores the cwd, so
+// the session has to advertise that its delete cannot be scoped any narrower.
+func TestKiroV1AdvertisesIDWideDelete(t *testing.T) {
+	home := t.TempDir()
+	newKiroDB(t, home, map[string]kiroV1Row{
+		"a": {Cwd: "/proj", UpdatedMs: 2000, History: []any{v1Prompt("q")}},
+	})
+	got := KiroAgent{}.scanV1()
+	if len(got) != 1 {
+		t.Fatalf("scanned %d sessions, want 1", len(got))
+	}
+	if got[0].Extra["deleteScope"] != "id" {
+		t.Errorf(`Extra["deleteScope"] = %q, want "id"`, got[0].Extra["deleteScope"])
+	}
+}

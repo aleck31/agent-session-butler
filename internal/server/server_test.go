@@ -1,13 +1,17 @@
 package server
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	_ "modernc.org/sqlite"
 )
 
 // sandboxServer points every agent's discovery at empty temp dirs, so handler
@@ -298,5 +302,58 @@ func TestTranscriptEndpoint(t *testing.T) {
 	// GET only.
 	if w := do(t, h, http.MethodPost, "/api/session/abc/transcript", "{}"); w.Code == http.StatusOK {
 		t.Error("POST should not be accepted")
+	}
+}
+
+// writeKiroV1 seeds a Kiro v1 store in a sandboxed HOME. macOS-only path, which
+// is where the duplicate-id case was found and where these assertions run.
+func writeKiroV1(t *testing.T, home string, rows [][2]string) {
+	t.Helper()
+	if runtime.GOOS != "darwin" {
+		t.Skip("v1 store path is only wired for darwin here")
+	}
+	dir := filepath.Join(home, "Library", "Application Support", "kiro-cli")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "data.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE conversations_v2 (key TEXT NOT NULL,
+		conversation_id TEXT NOT NULL, value TEXT NOT NULL,
+		created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+		PRIMARY KEY (key, conversation_id))`); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		blob := `{"conversation_id":"` + r[1] + `","history":[{"user":{"content":{"Prompt":{"prompt":"q"}}},` +
+			`"assistant":{"Response":{"content":"a"}}}]}`
+		if _, err := db.Exec(`INSERT INTO conversations_v2 VALUES (?,?,?,?,?)`,
+			r[0], r[1], blob, 1000, 2000); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// The HTTP layer has to pass the query's store and path through to the guard.
+// Whether allWithID then gets past it is covered at the store level, with a fake
+// agent — asserting it here would shell out to the real kiro-cli.
+func TestDeleteRefusesASharedIDEvenWithACwd(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HERMES_HOME", filepath.Join(home, ".hermes"))
+	writeKiroV1(t, home, [][2]string{{"/proj/a", "dupe"}, {"/proj/b", "dupe"}})
+	h := New("test-version").Handler()
+
+	// A cwd must not buy precision the agent cannot deliver, so this stays a refusal.
+	w := do(t, h, http.MethodDelete, "/api/session/dupe?store=v1&path=/proj/a", "")
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409", w.Code)
+	}
+	if msg := assertErrorBody(t, w); !strings.Contains(msg, "--all-with-id") {
+		t.Errorf("error %q should name the flag that proceeds", msg)
 	}
 }

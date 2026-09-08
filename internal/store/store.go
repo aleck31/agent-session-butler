@@ -222,9 +222,33 @@ func (s *Store) Delete(sess agent.Session) error {
 // first — and for a delete, that is the wrong session half the time.
 var ErrAmbiguousID = errors.New("id matches more than one session")
 
-// findSession locates a session by id, narrowed by store when given. An empty
-// store matches any, but only if exactly one session matches.
-func (s *Store) findSession(id, store string) (Group, agent.Session, error) {
+// findSession locates a session by id, narrowed by store and cwd when given. An
+// empty store or path matches any, but only if exactly one session matches.
+func (s *Store) findSession(id, store, path string) (Group, agent.Session, error) {
+	hits, groups := s.findAll(id, store, path)
+	switch len(hits) {
+	case 0:
+		switch {
+		case store != "" && path != "":
+			return Group{}, agent.Session{}, fmt.Errorf("no session with id %q in the %s store under %s", id, store, path)
+		case store != "":
+			return Group{}, agent.Session{}, fmt.Errorf("no session with id %q in the %s store", id, store)
+		case path != "":
+			return Group{}, agent.Session{}, fmt.Errorf("no session with id %q under %s", id, path)
+		}
+		return Group{}, agent.Session{}, fmt.Errorf("no session with id %q", id)
+	case 1:
+		return groups[0], hits[0], nil
+	default:
+		return Group{}, agent.Session{}, ambiguous(id, hits)
+	}
+}
+
+// findAll returns every session matching the id, optionally narrowed by store and
+// cwd (which should already be through ResolvePath). Separate from findSession
+// because a delete has to see all the matches: for Kiro's v1 store one id can name
+// several conversations and its CLI removes them together.
+func (s *Store) findAll(id, store, path string) ([]agent.Session, []Group) {
 	var hits []agent.Session
 	var groups []Group
 	for _, g := range s.Scan() {
@@ -235,37 +259,97 @@ func (s *Store) findSession(id, store string) (Group, agent.Session, error) {
 			if store != "" && sess.Store != store {
 				continue
 			}
+			if path != "" && !SamePath(sess.Cwd, path) {
+				continue
+			}
 			hits = append(hits, sess)
 			groups = append(groups, g)
 		}
 	}
-	switch len(hits) {
-	case 0:
-		if store != "" {
-			return Group{}, agent.Session{}, fmt.Errorf("no session with id %q in the %s store", id, store)
-		}
-		return Group{}, agent.Session{}, fmt.Errorf("no session with id %q", id)
-	case 1:
-		return groups[0], hits[0], nil
-	default:
-		var stores []string
-		for _, h := range hits {
-			stores = append(stores, h.Store)
-		}
-		return Group{}, agent.Session{}, fmt.Errorf("%w: %q is in the %s stores — say which with a store",
-			ErrAmbiguousID, id, strings.Join(stores, " and "))
-	}
+	return hits, groups
 }
 
-// DeleteByID finds a session by its id (via a fresh scan) and deletes it.
-// Returns an error if no session matches or the delete fails. Used by callers
-// that only have an id (e.g. the HTTP layer).
-func (s *Store) DeleteByID(id, store string) error {
-	_, sess, err := s.findSession(id, store)
-	if err != nil {
-		return err
+// ambiguous explains which narrowing would resolve the collision: a store when
+// the matches straddle stores, otherwise a cwd.
+func ambiguous(id string, hits []agent.Session) error {
+	stores := map[string]bool{}
+	var dirs []string
+	for _, h := range hits {
+		stores[h.Store] = true
+		dirs = append(dirs, h.Cwd)
 	}
-	return s.Delete(sess)
+	if len(stores) > 1 {
+		var names []string
+		for st := range stores {
+			names = append(names, st)
+		}
+		sort.Strings(names)
+		return fmt.Errorf("%w: %q is in the %s stores — say which with --store",
+			ErrAmbiguousID, id, strings.Join(names, " and "))
+	}
+	sort.Strings(dirs)
+	return fmt.Errorf("%w: %q names %d different conversations in the %s store (%s) — say which with --path",
+		ErrAmbiguousID, id, len(hits), hits[0].Store, strings.Join(dirs, ", "))
+}
+
+// DeleteByID finds a session by its id (via a fresh scan) and deletes it,
+// returning what was removed. Used by callers that only have an id (e.g. the HTTP
+// layer). When one id names several conversations that the owning agent can only
+// delete together, allWithID has to say so — no narrowing can remove just one.
+func (s *Store) DeleteByID(id, store, path string, allWithID bool) ([]agent.Session, error) {
+	// The guard deliberately ignores path: narrowing by cwd cannot narrow the delete,
+	// because the agent removes every session carrying this id. Honouring path here
+	// would make one look precise and silently take the others with it.
+	if wide, _ := s.findAll(id, store, ""); sharedDeleteScope(wide) {
+		if !allWithID {
+			return nil, errSharedID(id, wide)
+		}
+		// One call takes them all, so the rest are reported rather than deleted again —
+		// but every cache entry has to go, not just the one that was passed in.
+		if err := s.Delete(wide[0]); err != nil {
+			return nil, err
+		}
+		s.mu.Lock()
+		for _, sess := range wide[1:] {
+			delete(s.cache, sess.CacheKey)
+		}
+		s.mu.Unlock()
+		return wide, nil
+	}
+	_, sess, err := s.findSession(id, store, path)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Delete(sess); err != nil {
+		return nil, err
+	}
+	return []agent.Session{sess}, nil
+}
+
+// sharedDeleteScope reports whether these matches are several sessions the agent
+// deletes as one, keyed on the id rather than on the individual session.
+func sharedDeleteScope(hits []agent.Session) bool {
+	if len(hits) < 2 {
+		return false
+	}
+	for _, h := range hits {
+		if h.Extra["deleteScope"] != "id" {
+			return false
+		}
+	}
+	return true
+}
+
+// errSharedID explains why narrowing cannot help, unlike the ambiguity in ambiguous.
+func errSharedID(id string, hits []agent.Session) error {
+	var dirs []string
+	for _, h := range hits {
+		dirs = append(dirs, h.Cwd)
+	}
+	sort.Strings(dirs)
+	return fmt.Errorf("%w: %q names %d different conversations in the %s store (%s), "+
+		"and %s deletes by id — they can only go together; pass --all-with-id to confirm",
+		ErrAmbiguousID, id, len(hits), hits[0].Store, strings.Join(dirs, ", "), hits[0].Agent)
 }
 
 // RelocateByID moves (or copies, if asCopy) the session with the given id to
@@ -273,12 +357,12 @@ func (s *Store) DeleteByID(id, store string) error {
 // the normalised cwd it was actually filed under — the target is expanded and
 // validated, so what gets stored is not necessarily the string passed in.
 // Refuses locked sessions and targets that are not an existing directory.
-func (s *Store) RelocateByID(id, store, newCwd string, asCopy bool) (newID, resolvedCwd string, err error) {
+func (s *Store) RelocateByID(id, store, path, newCwd string, asCopy bool) (newID, resolvedCwd string, err error) {
 	target, err := resolveTargetCwd(newCwd)
 	if err != nil {
 		return "", "", err
 	}
-	_, sess, err := s.findSession(id, store)
+	_, sess, err := s.findSession(id, store, path)
 	if err != nil {
 		return "", "", err
 	}
@@ -302,7 +386,7 @@ func (s *Store) RelocateByID(id, store, newCwd string, asCopy bool) (newID, reso
 // RenameByID sets a session's title in its owning agent's own metadata, so the
 // agent shows the new title too. Refuses locked sessions and blank titles.
 // Returns the trimmed title that was actually written.
-func (s *Store) RenameByID(id, store, title string) (string, error) {
+func (s *Store) RenameByID(id, store, path, title string) (string, error) {
 	t := strings.TrimSpace(title)
 	if t == "" {
 		return "", fmt.Errorf("title must not be empty")
@@ -310,7 +394,7 @@ func (s *Store) RenameByID(id, store, title string) (string, error) {
 	// Deliberately no length cap. An earlier one at 200 runes looked sensible until
 	// it made the operation non-round-trippable: agents store far longer titles
 	// themselves, so a cap rejects putting back a title that was already there.
-	_, sess, err := s.findSession(id, store)
+	_, sess, err := s.findSession(id, store, path)
 	if err != nil {
 		return "", err
 	}
@@ -361,8 +445,8 @@ var ErrTranscriptUnsupported = errors.New("this agent cannot show session conten
 
 // Transcript returns a session's conversation. Sessions reach 97 MB, so opts
 // bounds what is read; with no bound the caller has opted into the whole thing.
-func (s *Store) TranscriptByID(id, store string, opts agent.TranscriptOptions) (agent.Session, []agent.Turn, error) {
-	g, sess, err := s.findSession(id, store)
+func (s *Store) TranscriptByID(id, store, path string, opts agent.TranscriptOptions) (agent.Session, []agent.Turn, error) {
+	g, sess, err := s.findSession(id, store, path)
 	if err != nil {
 		return agent.Session{}, nil, err
 	}

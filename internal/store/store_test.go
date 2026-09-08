@@ -388,13 +388,13 @@ func TestDeleteByID(t *testing.T) {
 	f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/x", 1)}}
 	s := newTestStore(f)
 
-	if err := s.DeleteByID("k1", ""); err != nil {
+	if _, err := s.DeleteByID("k1", "", "", false); err != nil {
 		t.Fatalf("delete k1: %v", err)
 	}
 	if len(f.deleted) != 1 {
 		t.Errorf("agent Delete calls: got %v", f.deleted)
 	}
-	if err := s.DeleteByID("nope", ""); err == nil {
+	if _, err := s.DeleteByID("nope", "", "", false); err == nil {
 		t.Error("expected an error for an unknown id")
 	}
 }
@@ -406,7 +406,7 @@ func TestRelocateByID(t *testing.T) {
 		s := newTestStore(f)
 		s.EnrichGroup(s.Scan()[0])
 
-		got, resolved, err := s.RelocateByID("k1", "", dest, false)
+		got, resolved, err := s.RelocateByID("k1", "", "", dest, false)
 		if err != nil {
 			t.Fatalf("relocate: %v", err)
 		}
@@ -428,7 +428,7 @@ func TestRelocateByID(t *testing.T) {
 	t.Run("copy gets a new id", func(t *testing.T) {
 		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/old", 1)}}
 		s := newTestStore(f)
-		got, _, err := s.RelocateByID("k1", "", t.TempDir(), true)
+		got, _, err := s.RelocateByID("k1", "", "", t.TempDir(), true)
 		if err != nil {
 			t.Fatalf("relocate: %v", err)
 		}
@@ -441,7 +441,7 @@ func TestRelocateByID(t *testing.T) {
 		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/old", 1)}}
 		s := newTestStore(f)
 		for _, cwd := range []string{"", "   ", "\t"} {
-			if _, _, err := s.RelocateByID("k1", "", cwd, false); err == nil {
+			if _, _, err := s.RelocateByID("k1", "", "", cwd, false); err == nil {
 				t.Errorf("cwd %q: expected an error", cwd)
 			}
 		}
@@ -453,7 +453,7 @@ func TestRelocateByID(t *testing.T) {
 	t.Run("locked sessions are refused", func(t *testing.T) {
 		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/old", 1, locked())}}
 		s := newTestStore(f)
-		if _, _, err := s.RelocateByID("k1", "", t.TempDir(), false); err == nil {
+		if _, _, err := s.RelocateByID("k1", "", "", t.TempDir(), false); err == nil {
 			t.Error("expected an error relocating a locked session")
 		}
 		if len(f.relocated) != 0 {
@@ -468,14 +468,14 @@ func TestRelocateByID(t *testing.T) {
 			relocErr: agent.ErrRelocateUnsupported,
 		}
 		s := newTestStore(f)
-		if _, _, err := s.RelocateByID("h1", "", t.TempDir(), false); !errors.Is(err, agent.ErrRelocateUnsupported) {
+		if _, _, err := s.RelocateByID("h1", "", "", t.TempDir(), false); !errors.Is(err, agent.ErrRelocateUnsupported) {
 			t.Errorf("got %v, want ErrRelocateUnsupported", err)
 		}
 	})
 
 	t.Run("unknown id errors", func(t *testing.T) {
 		s := newTestStore(&fakeAgent{name: "Kiro"})
-		if _, _, err := s.RelocateByID("nope", "", t.TempDir(), false); err == nil {
+		if _, _, err := s.RelocateByID("nope", "", "", t.TempDir(), false); err == nil {
 			t.Error("expected an error for an unknown id")
 		}
 	})
@@ -522,7 +522,7 @@ func TestRelocateRejectsUnusableTargets(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/old", 1)}}
 			s := newTestStore(f)
-			_, _, err := s.RelocateByID("k1", "", target, false)
+			_, _, err := s.RelocateByID("k1", "", "", target, false)
 			// "." resolves to the test's working directory, which does exist, so it
 			// is accepted — the point of the case is that it is not stored verbatim.
 			if name == "dot" {
@@ -556,7 +556,7 @@ func TestRelocateExpandsTilde(t *testing.T) {
 
 	f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/old", 1)}}
 	s := newTestStore(f)
-	_, resolved, err := s.RelocateByID("k1", "", "~/repos", false)
+	_, resolved, err := s.RelocateByID("k1", "", "", "~/repos", false)
 	if err != nil {
 		t.Fatalf("relocate: %v", err)
 	}
@@ -576,7 +576,7 @@ func TestRelocateNormalisesTheTarget(t *testing.T) {
 	f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/old", 1)}}
 	s := newTestStore(f)
 
-	_, resolved, err := s.RelocateByID("k1", "", dest+string(filepath.Separator)+"."+string(filepath.Separator), false)
+	_, resolved, err := s.RelocateByID("k1", "", "", dest+string(filepath.Separator)+"."+string(filepath.Separator), false)
 	if err != nil {
 		t.Fatalf("relocate: %v", err)
 	}
@@ -620,7 +620,7 @@ func TestRenameByID(t *testing.T) {
 		s := newTestStore(f)
 		s.EnrichGroup(s.Scan()[0])
 
-		got, err := s.RenameByID("k1", "", "  a better name  ")
+		got, err := s.RenameByID("k1", "", "", "  a better name  ")
 		if err != nil {
 			t.Fatalf("rename: %v", err)
 		}
@@ -639,7 +639,7 @@ func TestRenameByID(t *testing.T) {
 		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/x", 1)}}
 		s := newTestStore(f)
 		for _, title := range []string{"", "   ", "\t\n"} {
-			if _, err := s.RenameByID("k1", "", title); err == nil {
+			if _, err := s.RenameByID("k1", "", "", title); err == nil {
 				t.Errorf("title %q: expected an error", title)
 			}
 		}
@@ -654,7 +654,7 @@ func TestRenameByID(t *testing.T) {
 		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/x", 1)}}
 		s := newTestStore(f)
 		long := strings.Repeat("题", 5000)
-		got, err := s.RenameByID("k1", "", long)
+		got, err := s.RenameByID("k1", "", "", long)
 		if err != nil {
 			t.Fatalf("rename: %v", err)
 		}
@@ -666,7 +666,7 @@ func TestRenameByID(t *testing.T) {
 	t.Run("locked sessions are refused", func(t *testing.T) {
 		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{sess("k1", "Kiro", "/x", 1, locked())}}
 		s := newTestStore(f)
-		if _, err := s.RenameByID("k1", "", "new"); err == nil {
+		if _, err := s.RenameByID("k1", "", "", "new"); err == nil {
 			t.Error("expected an error renaming a locked session")
 		}
 		if len(f.renamed) != 0 {
@@ -679,7 +679,7 @@ func TestRenameByID(t *testing.T) {
 		f := &fakeAgent{name: "Hermes", sessions: []agent.Session{sess("h1", "Hermes", "/x", 1000)}, renameErr: boom}
 		s := newTestStore(f)
 		s.EnrichGroup(s.Scan()[0])
-		if _, err := s.RenameByID("h1", "", "new"); !errors.Is(err, boom) {
+		if _, err := s.RenameByID("h1", "", "", "new"); !errors.Is(err, boom) {
 			t.Errorf("got %v, want the agent's error", err)
 		}
 		if _, ok := s.cache["Hermes:h1"]; !ok {
@@ -691,14 +691,14 @@ func TestRenameByID(t *testing.T) {
 		f := &fakeAgent{name: "Ghost", sessions: []agent.Session{sess("g1", "Ghost", "/x", 1)},
 			renameErr: agent.ErrRenameUnsupported}
 		s := newTestStore(f)
-		if _, err := s.RenameByID("g1", "", "new"); !errors.Is(err, agent.ErrRenameUnsupported) {
+		if _, err := s.RenameByID("g1", "", "", "new"); !errors.Is(err, agent.ErrRenameUnsupported) {
 			t.Errorf("got %v, want ErrRenameUnsupported", err)
 		}
 	})
 
 	t.Run("unknown id errors", func(t *testing.T) {
 		s := newTestStore(&fakeAgent{name: "Kiro"})
-		if _, err := s.RenameByID("nope", "", "new"); err == nil {
+		if _, err := s.RenameByID("nope", "", "", "new"); err == nil {
 			t.Error("expected an error for an unknown id")
 		}
 	})
@@ -719,7 +719,7 @@ func TestAmbiguousIDIsRefusedRatherThanGuessed(t *testing.T) {
 	dest := t.TempDir()
 
 	t.Run("delete refuses", func(t *testing.T) {
-		err := s.DeleteByID("shared", "")
+		_, err := s.DeleteByID("shared", "", "", false)
 		if !errors.Is(err, ErrAmbiguousID) {
 			t.Errorf("got %v, want ErrAmbiguousID", err)
 		}
@@ -734,7 +734,7 @@ func TestAmbiguousIDIsRefusedRatherThanGuessed(t *testing.T) {
 
 	t.Run("delete with a store acts on that one only", func(t *testing.T) {
 		f.deleted = nil
-		if err := s.DeleteByID("shared", "v1"); err != nil {
+		if _, err := s.DeleteByID("shared", "v1", "", false); err != nil {
 			t.Fatalf("delete: %v", err)
 		}
 		if len(f.deleted) != 1 {
@@ -744,7 +744,7 @@ func TestAmbiguousIDIsRefusedRatherThanGuessed(t *testing.T) {
 
 	t.Run("rename refuses", func(t *testing.T) {
 		f.renamed = nil
-		if _, err := s.RenameByID("shared", "", "new"); !errors.Is(err, ErrAmbiguousID) {
+		if _, err := s.RenameByID("shared", "", "", "new"); !errors.Is(err, ErrAmbiguousID) {
 			t.Errorf("got %v, want ErrAmbiguousID", err)
 		}
 		if len(f.renamed) != 0 {
@@ -754,7 +754,7 @@ func TestAmbiguousIDIsRefusedRatherThanGuessed(t *testing.T) {
 
 	t.Run("relocate refuses", func(t *testing.T) {
 		f.relocated = nil
-		if _, _, err := s.RelocateByID("shared", "", dest, false); !errors.Is(err, ErrAmbiguousID) {
+		if _, _, err := s.RelocateByID("shared", "", "", dest, false); !errors.Is(err, ErrAmbiguousID) {
 			t.Errorf("got %v, want ErrAmbiguousID", err)
 		}
 		if len(f.relocated) != 0 {
@@ -763,7 +763,7 @@ func TestAmbiguousIDIsRefusedRatherThanGuessed(t *testing.T) {
 	})
 
 	t.Run("an unknown store is not silently ignored", func(t *testing.T) {
-		err := s.DeleteByID("shared", "v9")
+		_, err := s.DeleteByID("shared", "v9", "", false)
 		if err == nil {
 			t.Error("expected an error for a store that has no such session")
 		}
@@ -779,7 +779,103 @@ func TestUnambiguousIDNeedsNoStore(t *testing.T) {
 	only.Store = "v2"
 	f := &fakeAgent{name: "Kiro", sessions: []agent.Session{only}}
 	s := newTestStore(f)
-	if err := s.DeleteByID("solo", ""); err != nil {
+	if _, err := s.DeleteByID("solo", "", "", false); err != nil {
 		t.Errorf("delete without a store: %v", err)
 	}
+}
+
+// Kiro's v1 store keys a conversation by (cwd, id), so one id can name several
+// different conversations. Its CLI deletes by id alone, which makes a per-cwd
+// delete impossible — the tool has to say so rather than appear to do one.
+func TestSameStoreDuplicateIDNeedsCwdOrConfirmation(t *testing.T) {
+	a := sess("dupe", "Kiro", "/proj/a", 1000)
+	a.Store, a.CacheKey = "v1", "db#v1#/proj/a#dupe"
+	a.Extra = map[string]string{"deleteScope": "id"}
+	b := sess("dupe", "Kiro", "/proj/b", 2000)
+	b.Store, b.CacheKey = "v1", "db#v1#/proj/b#dupe"
+	b.Extra = map[string]string{"deleteScope": "id"}
+
+	newStore := func() (*Store, *fakeAgent) {
+		f := &fakeAgent{name: "Kiro", sessions: []agent.Session{a, b}}
+		return newTestStore(f), f
+	}
+
+	t.Run("a store alone does not disambiguate, and the message says so", func(t *testing.T) {
+		s, _ := newStore()
+		_, _, err := s.findSession("dupe", "v1", "")
+		if !errors.Is(err, ErrAmbiguousID) {
+			t.Fatalf("got %v, want ErrAmbiguousID", err)
+		}
+		// Pointing at --store here would send the caller in a circle.
+		if strings.Contains(err.Error(), "--store") || !strings.Contains(err.Error(), "--path") {
+			t.Errorf("error %q should point at --path, not --store", err)
+		}
+		for _, dir := range []string{"/proj/a", "/proj/b"} {
+			if !strings.Contains(err.Error(), dir) {
+				t.Errorf("error %q should name %s", err, dir)
+			}
+		}
+	})
+
+	t.Run("a cwd picks one for reads", func(t *testing.T) {
+		s, _ := newStore()
+		_, got, err := s.findSession("dupe", "v1", "/proj/b")
+		if err != nil {
+			t.Fatalf("findSession: %v", err)
+		}
+		if got.Cwd != "/proj/b" {
+			t.Errorf("cwd = %q, want /proj/b", got.Cwd)
+		}
+	})
+
+	t.Run("delete refuses without confirmation", func(t *testing.T) {
+		s, f := newStore()
+		_, err := s.DeleteByID("dupe", "v1", "", false)
+		if !errors.Is(err, ErrAmbiguousID) {
+			t.Fatalf("got %v, want ErrAmbiguousID", err)
+		}
+		if !strings.Contains(err.Error(), "--all-with-id") {
+			t.Errorf("error %q should name the flag that proceeds", err)
+		}
+		if len(f.deleted) != 0 {
+			t.Errorf("deleted despite refusing: %v", f.deleted)
+		}
+	})
+
+	// The trap this guards: a cwd makes the delete look scoped, but the agent still
+	// removes every session with the id, so the other one would vanish unannounced.
+	t.Run("a cwd does not make the delete look precise", func(t *testing.T) {
+		s, f := newStore()
+		_, err := s.DeleteByID("dupe", "v1", "/proj/a", false)
+		if !errors.Is(err, ErrAmbiguousID) {
+			t.Fatalf("a cwd-narrowed delete must still refuse, got %v", err)
+		}
+		if len(f.deleted) != 0 {
+			t.Errorf("deleted despite refusing: %v", f.deleted)
+		}
+	})
+
+	t.Run("confirmation deletes once and reports every session that went", func(t *testing.T) {
+		s, f := newStore()
+		// Populate the cache so the purge can be checked.
+		s.cache[a.CacheKey] = cacheEntry{mtime: a.ModifiedAt, session: a}
+		s.cache[b.CacheKey] = cacheEntry{mtime: b.ModifiedAt, session: b}
+
+		removed, err := s.DeleteByID("dupe", "v1", "", true)
+		if err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if len(removed) != 2 {
+			t.Errorf("reported %d removed, want 2 — the caller's list is staler than it knows", len(removed))
+		}
+		// One CLI call takes both; calling twice would fail on the second.
+		if len(f.deleted) != 1 {
+			t.Errorf("agent Delete calls = %d, want 1", len(f.deleted))
+		}
+		for _, k := range []string{a.CacheKey, b.CacheKey} {
+			if _, stale := s.cache[k]; stale {
+				t.Errorf("cache entry %q survived the delete", k)
+			}
+		}
+	})
 }
