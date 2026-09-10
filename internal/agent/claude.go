@@ -109,8 +109,8 @@ func (a ClaudeCodeAgent) parse(path string) (Session, bool) {
 	if !sawAnyLine {
 		return Session{}, false
 	}
-	// Skip metadata-only files (only ai-title / agent-name rows, no chat): they
-	// have no conversation, no cwd, and 0 messages — not real sessions.
+	// Skip metadata-only files (only title / agent-name rows, no chat): they have
+	// no conversation, no cwd, and 0 messages — not real sessions.
 	if !sawConversation {
 		return Session{}, false
 	}
@@ -146,16 +146,26 @@ func (ClaudeCodeAgent) primaryFile(s Session) string {
 }
 
 // Enrich does one pass over the file: tally user/assistant messages and resolve
-// the title (ai-title, else first user message). Fills both lazy fields.
+// the title (custom-title, else ai-title, else first user message). Fills both
+// lazy fields.
+//
+// custom-title outranks ai-title because that is Claude's own order
+// (`customTitle || aiTitle || …`, three separate resolution sites in the 2.1.226
+// binary). Reading ai-title alone showed the generated summary for a session the
+// user had named with Claude's /rename, so the listing disagreed with the agent.
 func (a ClaudeCodeAgent) Enrich(s Session) Session {
 	count := 0
-	var aiTitle, firstUserText string
+	var customTitle, aiTitle, firstUserText string
 	forEachLine(a.primaryFile(s), func(line string) bool {
 		var obj map[string]any
 		if json.Unmarshal([]byte(line), &obj) != nil {
 			return true
 		}
 		switch obj["type"] {
+		case "custom-title":
+			if t, ok := obj["customTitle"].(string); ok {
+				customTitle = t
+			}
 		case "ai-title":
 			if t, ok := obj["aiTitle"].(string); ok {
 				aiTitle = t
@@ -171,7 +181,10 @@ func (a ClaudeCodeAgent) Enrich(s Session) Session {
 		return true
 	})
 
-	resolved := aiTitle
+	resolved := customTitle
+	if resolved == "" {
+		resolved = aiTitle
+	}
 	if resolved == "" {
 		t := strings.TrimSpace(firstUserText)
 		if len([]rune(t)) > 60 {
@@ -221,13 +234,21 @@ func (a ClaudeCodeAgent) Relocate(s Session, newCwd string, asCopy bool) (string
 	return id, nil
 }
 
-// Rename sets the session's title by rewriting its ai-title rows — the same row
-// type Claude writes itself, and the one our reader takes the title from.
+// Rename sets the session's title by rewriting its custom-title rows — the row
+// Claude's own /rename writes, and the one it resolves first.
 //
-// Verified against real history: Claude re-emits an ai-title row repeatedly (up
-// to 700 times in one file) but never with a different value — 0 of 47 files had
-// two distinct titles. So "one title value per file" is Claude's own invariant,
-// and rewriting every row preserves it rather than leaving a mix. Caveat worth
+// custom-title, not ai-title, for three reasons. Claude resolves
+// `customTitle || aiTitle || …`, so a title written to ai-title is outranked and
+// the rename silently no-ops on any session that has a custom-title row. ai-title
+// is Claude's generated summary, so writing it both misattributes a human
+// decision to the model and destroys the summary; custom-title layers intent on
+// top and leaves it intact underneath. And it agrees with /rename, so the two
+// paths cannot diverge.
+//
+// Verified against real history: Claude re-emits these rows repeatedly (81
+// custom-title rows in one file, up to 700 ai-title rows in another) but never
+// with a different value, so "one title value per file" is its invariant and
+// rewriting every row preserves it rather than leaving a mix. Caveat worth
 // knowing: resuming the session may have Claude append its own title again, at
 // which point ours is superseded.
 func (a ClaudeCodeAgent) Rename(s Session, title string) error {
@@ -247,8 +268,8 @@ func (a ClaudeCodeAgent) Rename(s Session, title string) error {
 	forEachLine(path, func(line string) bool {
 		var obj map[string]any
 		if json.Unmarshal([]byte(line), &obj) == nil {
-			if t, _ := obj["type"].(string); t == "ai-title" {
-				obj["aiTitle"] = title
+			if t, _ := obj["type"].(string); t == "custom-title" {
+				obj["customTitle"] = title
 				if b, e := json.Marshal(obj); e == nil {
 					line = string(b)
 					wrote = true
@@ -264,9 +285,9 @@ func (a ClaudeCodeAgent) Rename(s Session, title string) error {
 		os.Remove(tmp)
 		return fmt.Errorf("read no lines from %s", path)
 	}
-	// A session Claude never titled has no such row; add one so the title sticks.
+	// A session nobody has named has no such row; add one so the title sticks.
 	if !wrote {
-		row, err := json.Marshal(map[string]any{"type": "ai-title", "aiTitle": title, "sessionId": sessionID})
+		row, err := json.Marshal(map[string]any{"type": "custom-title", "customTitle": title, "sessionId": sessionID})
 		if err != nil {
 			out.Close()
 			os.Remove(tmp)

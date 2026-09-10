@@ -176,6 +176,34 @@ func TestClaudeEnrichCountsAndPrefersAITitle(t *testing.T) {
 	}
 }
 
+// Claude resolves customTitle || aiTitle, so a session named with its /rename
+// must read back as that name and not as the generated summary underneath.
+func TestClaudeEnrichPrefersCustomTitleOverAITitle(t *testing.T) {
+	sandboxHome(t)
+	writeClaudeSession(t, "proj", "s1",
+		userLine("s1", "/x", "first question"),
+		`{"type":"ai-title","aiTitle":"generated summary","sessionId":"s1"}`,
+		`{"type":"custom-title","customTitle":"named with /rename","sessionId":"s1"}`)
+
+	if got := (ClaudeCodeAgent{}).Enrich((ClaudeCodeAgent{}).Scan()[0]).Title; got != "named with /rename" {
+		t.Errorf("title: got %q, want the custom-title — Claude shows that one", got)
+	}
+}
+
+// The real-session symptom behind issue #3, independent of renaming: /rename
+// writes only a custom-title row, so reading ai-title alone fell through to the
+// first user message and the listing disagreed with Claude's own display.
+func TestClaudeEnrichUsesCustomTitleWhenNoAITitleExists(t *testing.T) {
+	sandboxHome(t)
+	writeClaudeSession(t, "proj", "s1",
+		userLine("s1", "/x", "<local-command-caveat>Caveat: the messages below were generated"),
+		`{"type":"custom-title","customTitle":"macp/nv1 · x-tec · verify tagged title","sessionId":"s1"}`)
+
+	if got := (ClaudeCodeAgent{}).Enrich((ClaudeCodeAgent{}).Scan()[0]).Title; got != "macp/nv1 · x-tec · verify tagged title" {
+		t.Errorf("title: got %q, want the custom-title rather than the first user message", got)
+	}
+}
+
 // Without an ai-title, the title falls back to the first user message, clamped
 // to 60 runes — counted in runes, not bytes, so CJK isn't cut mid-character.
 func TestClaudeEnrichTitleFallsBackToFirstUserMessageClampedByRune(t *testing.T) {
@@ -370,13 +398,13 @@ func TestExtractText(t *testing.T) {
 // Claude re-emits the same ai-title row many times and never with a different
 // value, so "one title value per file" is its own invariant — rewriting every row
 // preserves that rather than leaving a mix the reader would resolve by luck.
-func TestClaudeRenameRewritesEveryAITitleRow(t *testing.T) {
+func TestClaudeRenameRewritesEveryCustomTitleRow(t *testing.T) {
 	sandboxHome(t)
 	path := writeClaudeSession(t, "proj", "sid1",
 		userLine("sid1", "/proj", "a question"),
-		`{"type":"ai-title","aiTitle":"auto title","sessionId":"sid1"}`,
+		`{"type":"custom-title","customTitle":"named in claude","sessionId":"sid1"}`,
 		assistantLine("sid1", "/proj", "an answer"),
-		`{"type":"ai-title","aiTitle":"auto title","sessionId":"sid1"}`)
+		`{"type":"custom-title","customTitle":"named in claude","sessionId":"sid1"}`)
 
 	s := (ClaudeCodeAgent{}).Scan()[0]
 	if err := (ClaudeCodeAgent{}).Rename(s, "本项目架构梳理"); err != nil {
@@ -388,13 +416,13 @@ func TestClaudeRenameRewritesEveryAITitleRow(t *testing.T) {
 	forEachLine(path, func(line string) bool {
 		lines++
 		var o map[string]any
-		if json.Unmarshal([]byte(line), &o) == nil && o["type"] == "ai-title" {
-			titles = append(titles, o["aiTitle"].(string))
+		if json.Unmarshal([]byte(line), &o) == nil && o["type"] == "custom-title" {
+			titles = append(titles, o["customTitle"].(string))
 		}
 		return true
 	})
 	if len(titles) != 2 || titles[0] != "本项目架构梳理" || titles[1] != "本项目架构梳理" {
-		t.Errorf("ai-title rows: got %v, want both rewritten", titles)
+		t.Errorf("custom-title rows: got %v, want both rewritten", titles)
 	}
 	if lines != 4 {
 		t.Errorf("line count: got %d, want 4 (no rows added or lost)", lines)
@@ -404,7 +432,52 @@ func TestClaudeRenameRewritesEveryAITitleRow(t *testing.T) {
 	}
 }
 
-// A session Claude never titled has no ai-title row at all; one gets added so
+// The defect this pins (issue #3): Rename wrote ai-title, which Claude outranks
+// with customTitle, so on a session named from inside Claude the rename reported
+// success while the agent kept showing the old name — and Enrich read back the
+// same weak field it had just written, so the tool corroborated its own
+// ineffective write. Resolution is asserted the way Claude does it, against the
+// bytes on disk, so reading and writing cannot agree on a field Claude ignores.
+func TestClaudeRenameReachesTheFieldClaudeActuallyResolves(t *testing.T) {
+	sandboxHome(t)
+	path := writeClaudeSession(t, "proj", "sid1",
+		userLine("sid1", "/proj", "a question"),
+		`{"type":"ai-title","aiTitle":"claude's generated summary","sessionId":"sid1"}`,
+		`{"type":"custom-title","customTitle":"named with /rename","sessionId":"sid1"}`)
+
+	if err := (ClaudeCodeAgent{}).Rename((ClaudeCodeAgent{}).Scan()[0], "asbutler's name"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	// customTitle || aiTitle — Claude's own order, three resolution sites in 2.1.226.
+	var customTitle, aiTitle string
+	forEachLine(path, func(line string) bool {
+		var o map[string]any
+		if json.Unmarshal([]byte(line), &o) != nil {
+			return true
+		}
+		switch o["type"] {
+		case "custom-title":
+			customTitle, _ = o["customTitle"].(string)
+		case "ai-title":
+			aiTitle, _ = o["aiTitle"].(string)
+		}
+		return true
+	})
+	resolved := customTitle
+	if resolved == "" {
+		resolved = aiTitle
+	}
+	if resolved != "asbutler's name" {
+		t.Errorf("Claude would resolve %q, want the renamed title — the rename did not reach the winning field", resolved)
+	}
+	// ai-title is Claude's to own: layering intent on top must not destroy it.
+	if aiTitle != "claude's generated summary" {
+		t.Errorf("aiTitle: got %q, want the generated summary left intact", aiTitle)
+	}
+}
+
+// A session nobody has named has no custom-title row at all; one gets added so
 // the new title is actually persisted.
 func TestClaudeRenameAddsARowWhenNoneExists(t *testing.T) {
 	sandboxHome(t)
@@ -418,8 +491,8 @@ func TestClaudeRenameAddsARowWhenNoneExists(t *testing.T) {
 	found := ""
 	forEachLine(path, func(line string) bool {
 		var o map[string]any
-		if json.Unmarshal([]byte(line), &o) == nil && o["type"] == "ai-title" {
-			found, _ = o["aiTitle"].(string)
+		if json.Unmarshal([]byte(line), &o) == nil && o["type"] == "custom-title" {
+			found, _ = o["customTitle"].(string)
 			if id, _ := o["sessionId"].(string); id != "sid1" {
 				t.Errorf("added row has sessionId %q, want sid1", id)
 			}
@@ -427,7 +500,7 @@ func TestClaudeRenameAddsARowWhenNoneExists(t *testing.T) {
 		return true
 	})
 	if found != "手工命名" {
-		t.Errorf("no ai-title row was added (got %q)", found)
+		t.Errorf("no custom-title row was added (got %q)", found)
 	}
 	if got := (ClaudeCodeAgent{}).Enrich((ClaudeCodeAgent{}).Scan()[0]).Title; got != "手工命名" {
 		t.Errorf("enrich reports %q", got)

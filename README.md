@@ -143,11 +143,13 @@ Titles come from a session's first prompt, which makes several sessions on one t
 | Agent | How the title is set |
 |-------|----------------------|
 | Kiro | the `title` field in the session's `.json` |
-| Claude Code | the `ai-title` rows in the session's `.jsonl` |
+| Claude Code | the `custom-title` rows in the session's `.jsonl` |
 | Codex | the app-server's JSON-RPC `thread/name/set` |
 | Hermes | `hermes sessions rename` |
 
-Two caveats worth knowing. Claude Code re-emits its own `ai-title` row as a session progresses, so resuming a renamed session may let it supersede your title (it never *changes* an existing value — verified across 47 real sessions — it just appends its own again). And `rename` takes one session at a time on purpose: giving several the same title would recreate the ambiguity it exists to remove.
+For Claude Code that is the same row its own `/rename` writes. Since 0.8.4 — before that, `rename` wrote `ai-title`, which Claude outranks with `customTitle`, so on any session already named from inside Claude the rename reported success while Claude kept showing the old name. Writing `custom-title` also leaves Claude's generated `ai-title` summary intact underneath, where the old behaviour overwrote it, and means a resumed session no longer supersedes your title — what Claude re-emits is the lower-precedence field.
+
+`rename` takes one session at a time on purpose: giving several the same title would recreate the ambiguity it exists to remove.
 
 There is no length limit. Agents store far longer titles themselves — a Codex title is the raw first prompt, nearly 10,000 characters in one real case — so capping the input would make it impossible to put back a title that was already there. Clamping is done where titles are displayed.
 
@@ -166,6 +168,7 @@ What that pins down, for anyone changing this code:
 - **`asbutler list` must keep defaulting to JSON** (since 0.5.4) and `--path` must keep its exact-directory, non-recursive, literal-path semantics. A consumer should pass the same spelling the session was recorded under; resolving symlinks would merge two directories' lists into one.
 - **Pass the `cwd` back as `--path` on every mutation.** An id identifies a session only together with its store and directory (see Kiro, above). A consumer that already knows the directory it listed should send it, or an operation on a Kiro v1 id can be refused as ambiguous.
 - **A consumer spawned from a GUI does not inherit a shell's `PATH`.** Mutations delegate to each agent's own CLI, so those binaries are resolved from the usual install locations (`~/.local/bin`, `~/.toolbox/bin`, Homebrew, …) and not from `PATH` alone — that is what made a delete from an editor plugin fail with `executable file not found in $PATH`. Each delegated call is also bounded at 60s, so a hung agent CLI surfaces as an error instead of a spinner that never stops.
+- **Resolve `asbutler` itself the same way — don't rely on `PATH`.** The mirror image of the point above, and the consumer's job rather than this tool's: `install.sh` puts the binary in `~/.local/bin`, the conventional per-user location, which stock Ubuntu adds from `~/.profile` — a file only login shells read. So `ssh host 'asbutler …'` reports it missing on a machine where it is installed and working (issue #2). Try a configured absolute path, then `PATH`, then `~/.local/bin/asbutler`; or wrap the call in a login shell (`bash -lc`), which costs a shell startup but is a one-liner.
 - Minimum version required by the consumer: **0.6.1**.
 
 ### Browser UI (`webui`)
