@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -280,11 +279,10 @@ func codexSetThreadName(threadID, title string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	codexBin, err := toolPath("codex")
+	cmd, err := toolCommand(ctx, "codex", "app-server")
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, codexBin, "app-server")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err

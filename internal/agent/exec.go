@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,34 +13,25 @@ import (
 	"time"
 )
 
-// toolTimeout bounds a delegated CLI call. These are local operations on a local
-// store, so a minute is generous; without a bound a hung tool hangs asbutler,
-// which for a caller like an editor plugin means a spinner that never stops.
+// Agents are mutated through their own CLI. asbutler is often started by something other than the
+// user's shell — a GUI app, `ssh host cmd` — and so lacks the PATH the shell's rc files build.
+// Lookup order: ASBUTLER_<TOOL> override, inherited PATH, known install dirs, the login shell's PATH.
+
+// toolTimeout bounds a delegated CLI call; without it a hung tool is a consumer's endless spinner.
 const toolTimeout = 60 * time.Second
 
 // toolTimeoutFor is the value actually used, so a test can shorten it.
 var toolTimeoutFor = toolTimeout
 
-// Several agents are mutated through their own CLI rather than by writing their
-// stores. Finding those binaries cannot rely on PATH alone: a webui launched from
-// Finder or a desktop entry inherits the session's PATH, not the one a shell rc
-// file builds, so ~/.local/bin and Homebrew are typically absent. Deleting a
-// session then failed with "executable file not found in $PATH".
-//
-// So look in PATH first, then in the places these tools actually install to.
+var toolPathOnce sync.Map // tool name → resolved path; misses are not cached
 
-var (
-	toolPathOnce sync.Map // tool name → resolved path, resolved at most once
-)
+// loginPath asks the user's shell for its PATH, at most once and only after the cheaper steps miss.
+var loginPath = sync.OnceValue(shellPath)
 
 // extraToolDirs are the install locations to try when PATH does not have the tool.
 func extraToolDirs() []string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = ""
-	}
-	dirs := []string{}
-	if home != "" {
+	var dirs []string
+	if home, err := os.UserHomeDir(); err == nil {
 		dirs = append(dirs,
 			filepath.Join(home, ".local", "bin"),
 			filepath.Join(home, "bin"),
@@ -57,45 +49,100 @@ func extraToolDirs() []string {
 	return dirs
 }
 
-// toolPath resolves an agent CLI to an absolute path, or returns an error naming
-// where it looked — a message a user can act on, unlike "not found in $PATH".
+// toolPath resolves an agent CLI to an absolute path, or explains where it looked.
 func toolPath(name string) (string, error) {
-	if v, ok := toolPathOnce.Load(name); ok {
-		if p, isStr := v.(string); isStr {
-			return p, nil
-		}
+	if p, ok := toolPathOnce.Load(name); ok {
+		return p.(string), nil
 	}
-	if p, err := exec.LookPath(name); err == nil {
+	override := "ASBUTLER_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+	if p := os.Getenv(override); p != "" {
+		if !isExecutable(p) {
+			return "", fmt.Errorf("%s=%s is not an executable file", override, p)
+		}
 		toolPathOnce.Store(name, p)
 		return p, nil
 	}
-	for _, dir := range extraToolDirs() {
-		p := filepath.Join(dir, name)
-		if info, err := os.Stat(p); err == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0 {
-			toolPathOnce.Store(name, p)
-			return p, nil
+	p, err := exec.LookPath(name)
+	if err != nil {
+		if p = lookIn(extraToolDirs(), name); p == "" {
+			p = lookIn(filepath.SplitList(loginPath()), name)
 		}
 	}
-	return "", fmt.Errorf("%s is not installed, or not where this could find it "+
-		"(PATH, %s)", name, strings.Join(extraToolDirs(), ", "))
+	if p == "" {
+		return "", fmt.Errorf("%s not found on PATH, in %s, or on your login shell's PATH; set %s to its location",
+			name, strings.Join(extraToolDirs(), ", "), override)
+	}
+	toolPathOnce.Store(name, p)
+	return p, nil
 }
 
-// runTool executes an agent's CLI and returns its combined output. A timeout is
-// reported as such rather than as the empty output the context cancellation
-// leaves behind.
-func runTool(name string, args ...string) (string, error) {
+func lookIn(dirs []string, name string) string {
+	for _, dir := range dirs {
+		if p := filepath.Join(dir, name); dir != "" && isExecutable(p) {
+			return p
+		}
+	}
+	return ""
+}
+
+func isExecutable(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0
+}
+
+// shellPath runs the user's shell as an interactive login shell, so both profile and rc files apply,
+// and reads PATH from `env` — an external command, so this works the same in fish.
+func shellPath() string {
+	shell := os.Getenv("SHELL")
+	if shell == "" || runtime.GOOS == "windows" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, shell, "-ilc", "env")
+	killGroupOnCancel(cmd)
+	out, _ := cmd.Output() // rc files may fail or print noise; only the PATH= line matters
+	path := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		if v, ok := strings.CutPrefix(line, "PATH="); ok {
+			path = v
+		}
+	}
+	return path
+}
+
+// toolCommand prepares a run of an agent CLI. The tool's own directories go first on the child's
+// PATH, so a `#!/usr/bin/env node` script finds the interpreter installed beside it.
+func toolCommand(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
 	p, err := toolPath(name)
+	if err != nil {
+		return nil, err
+	}
+	dirs := []string{filepath.Dir(p)}
+	if real, err := filepath.EvalSymlinks(p); err == nil {
+		dirs = append(dirs, filepath.Dir(real))
+	}
+	cmd := exec.CommandContext(ctx, p, args...)
+	cmd.Env = append(os.Environ(), "PATH="+strings.Join(append(dirs, os.Getenv("PATH")), string(os.PathListSeparator)))
+	killGroupOnCancel(cmd)
+	return cmd, nil
+}
+
+// runTool executes an agent's CLI and returns its combined output.
+func runTool(name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), toolTimeoutFor)
+	defer cancel()
+	cmd, err := toolCommand(ctx, name, args...)
 	if err != nil {
 		return "", err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), toolTimeoutFor)
-	defer cancel()
-
-	out, err := exec.CommandContext(ctx, p, args...).CombinedOutput()
-	// Report a timeout as one: the context's error survives, while the process's
-	// own status after being killed says nothing useful.
+	out, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
 		return string(out), fmt.Errorf("%s did not finish within %s", name, toolTimeoutFor)
+	}
+	// The tool exited cleanly but left a background child holding its output; its result stands.
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil
 	}
 	return string(out), err
 }
