@@ -300,12 +300,11 @@ func (a KiroAgent) Enrich(s Session) Session {
 	}
 	count := 0
 	if jsonlPath != "" {
-		forEachLine(jsonlPath, func(line string) bool {
-			var obj map[string]any
-			if json.Unmarshal([]byte(line), &obj) != nil {
+		forEachLineBytes(jsonlPath, func(line []byte) bool {
+			if !completeLine(line) {
 				return true
 			}
-			switch obj["kind"] {
+			switch kind, _ := topLevelString(line, "kind"); kind {
 			case "Prompt", "AssistantMessage":
 				count++
 			}

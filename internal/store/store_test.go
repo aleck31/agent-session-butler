@@ -858,8 +858,8 @@ func TestSameStoreDuplicateIDNeedsCwdOrConfirmation(t *testing.T) {
 	t.Run("confirmation deletes once and reports every session that went", func(t *testing.T) {
 		s, f := newStore()
 		// Populate the cache so the purge can be checked.
-		s.cache[a.CacheKey] = cacheEntry{mtime: a.ModifiedAt, session: a}
-		s.cache[b.CacheKey] = cacheEntry{mtime: b.ModifiedAt, session: b}
+		s.cache[a.CacheKey] = cacheEntry{MTime: a.ModifiedAt, Size: a.FileSize, Count: 1}
+		s.cache[b.CacheKey] = cacheEntry{MTime: b.ModifiedAt, Size: b.FileSize, Count: 1}
 
 		removed, err := s.DeleteByID("dupe", "v1", "", true)
 		if err != nil {

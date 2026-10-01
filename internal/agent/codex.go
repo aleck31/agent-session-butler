@@ -182,7 +182,18 @@ var codexInjectedUserTags = []string{
 func (a CodexAgent) Enrich(s Session) Session {
 	count := 0
 	if len(s.FilePaths) > 0 {
-		forEachLine(s.FilePaths[0], func(line string) bool {
+		forEachLineBytes(s.FilePaths[0], func(line []byte) bool {
+			// Tool calls and their output are response_items too, so filter on payload.type before decoding.
+			if t, _ := topLevelString(line, "type"); t != "response_item" || !completeLine(line) {
+				return true
+			}
+			j, ok := fieldStart(line, "payload")
+			if !ok {
+				return true
+			}
+			if pt, _ := topLevelString(line[j:], "type"); pt != "message" {
+				return true
+			}
 			var row struct {
 				Type    string `json:"type"`
 				Payload struct {
@@ -193,7 +204,7 @@ func (a CodexAgent) Enrich(s Session) Session {
 					} `json:"content"`
 				} `json:"payload"`
 			}
-			if json.Unmarshal([]byte(line), &row) != nil {
+			if json.Unmarshal(line, &row) != nil {
 				return true
 			}
 			if row.Type != "response_item" || row.Payload.Type != "message" {

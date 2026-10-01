@@ -156,24 +156,29 @@ func (ClaudeCodeAgent) primaryFile(s Session) string {
 func (a ClaudeCodeAgent) Enrich(s Session) Session {
 	count := 0
 	var customTitle, aiTitle, firstUserText string
-	forEachLine(a.primaryFile(s), func(line string) bool {
-		var obj map[string]any
-		if json.Unmarshal([]byte(line), &obj) != nil {
+	forEachLineBytes(a.primaryFile(s), func(line []byte) bool {
+		if !completeLine(line) {
 			return true
 		}
-		switch obj["type"] {
+		switch typ, _ := topLevelString(line, "type"); typ {
 		case "custom-title":
-			if t, ok := obj["customTitle"].(string); ok {
+			if t, ok := topLevelString(line, "customTitle"); ok {
 				customTitle = t
 			}
 		case "ai-title":
-			if t, ok := obj["aiTitle"].(string); ok {
+			if t, ok := topLevelString(line, "aiTitle"); ok {
 				aiTitle = t
 			}
 		case "user":
 			count++
+			// Only the first user line's text is needed, so only it pays for a full decode.
 			if firstUserText == "" {
-				firstUserText = extractText(obj["message"])
+				var obj struct {
+					Message any `json:"message"`
+				}
+				if json.Unmarshal(line, &obj) == nil {
+					firstUserText = extractText(obj.Message)
+				}
 			}
 		case "assistant":
 			count++

@@ -22,6 +22,7 @@ func sandboxServer(t *testing.T) http.Handler {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("HERMES_HOME", filepath.Join(home, ".hermes"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	return New("test-version").Handler()
 }
 
@@ -345,6 +346,7 @@ func TestDeleteRefusesASharedIDEvenWithACwd(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("HERMES_HOME", filepath.Join(home, ".hermes"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	writeKiroV1(t, home, [][2]string{{"/proj/a", "dupe"}, {"/proj/b", "dupe"}})
 	h := New("test-version").Handler()
 

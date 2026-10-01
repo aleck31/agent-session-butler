@@ -65,30 +65,29 @@ func (g Group) CwdExists() bool {
 	return err == nil && info.IsDir()
 }
 
-type cacheEntry struct {
-	mtime   time.Time
-	session agent.Session
-}
-
 // Store owns the agent registry and the enrichment cache.
 type Store struct {
 	agents []agent.Agent
 
-	mu    sync.RWMutex
-	cache map[string]cacheEntry // keyed by CacheKey
+	mu        sync.RWMutex
+	cache     map[string]cacheEntry // keyed by CacheKey; see cache.go
+	cachePath string                // "" keeps the cache in memory only
+	dirty     bool                  // cache differs from what cachePath holds
 }
 
 // New builds a store with the default agent registry. Order is cosmetic only
 // (a stable tie-breaker).
 func New() *Store {
+	path := defaultCachePath()
 	return &Store{
+		cachePath: path,
 		agents: []agent.Agent{
 			agent.KiroAgent{},
 			agent.ClaudeCodeAgent{},
 			agent.CodexAgent{},
 			agent.HermesAgent{},
 		},
-		cache: map[string]cacheEntry{},
+		cache: loadCache(path),
 	}
 }
 
@@ -151,6 +150,7 @@ func (s *Store) Scan() []Group {
 	for k := range s.cache {
 		if _, ok := live[k]; !ok {
 			delete(s.cache, k)
+			s.dirty = true
 		}
 	}
 	s.mu.Unlock()
@@ -158,14 +158,22 @@ func (s *Store) Scan() []Group {
 	return group(merged)
 }
 
-// mergedLocked reuses the cached enriched session when the file is unchanged
-// (same mtime); otherwise returns the freshly-scanned session as-is. Caller
-// holds s.mu.
+// mergedLocked lays cached enrichment over the fresh scan when the session is
+// unchanged; otherwise returns the scan as-is. Caller holds s.mu.
 func (s *Store) mergedLocked(scanned agent.Session) agent.Session {
-	if hit, ok := s.cache[scanned.CacheKey]; ok && hit.mtime.Equal(scanned.ModifiedAt) {
-		return hit.session
+	if hit, ok := s.cache[scanned.CacheKey]; ok && hit.valid(scanned) {
+		return hit.apply(scanned)
 	}
 	return scanned
+}
+
+// forgetLocked drops a session whose enrichment an operation has made stale. Caller holds s.mu.
+func (s *Store) forgetLocked(key string) {
+	if _, ok := s.cache[key]; ok {
+		delete(s.cache, key)
+		s.dirty = true
+		s.saveLocked()
+	}
 }
 
 // EnrichGroup enriches every not-yet-counted session in a group (message count
@@ -179,8 +187,8 @@ func (s *Store) EnrichGroup(g Group) Group {
 		s.mu.RLock()
 		hit, ok := s.cache[sess.CacheKey]
 		s.mu.RUnlock()
-		if ok && hit.mtime.Equal(sess.ModifiedAt) {
-			g.Sessions[i] = hit.session
+		if ok && hit.valid(sess) {
+			g.Sessions[i] = hit.apply(sess)
 			continue
 		}
 		a := s.agentNamed(sess.Agent)
@@ -189,10 +197,16 @@ func (s *Store) EnrichGroup(g Group) Group {
 		}
 		enriched := a.Enrich(sess)
 		g.Sessions[i] = enriched
-		s.mu.Lock()
-		s.cache[enriched.CacheKey] = cacheEntry{mtime: enriched.ModifiedAt, session: enriched}
-		s.mu.Unlock()
+		if e, ok := entryFor(sess, enriched); ok {
+			s.mu.Lock()
+			s.cache[enriched.CacheKey] = e
+			s.dirty = true
+			s.mu.Unlock()
+		}
 	}
+	s.mu.Lock()
+	s.saveLocked()
+	s.mu.Unlock()
 	return g
 }
 
@@ -211,7 +225,7 @@ func (s *Store) Delete(sess agent.Session) error {
 		return err
 	}
 	s.mu.Lock()
-	delete(s.cache, sess.CacheKey)
+	s.forgetLocked(sess.CacheKey)
 	s.mu.Unlock()
 	return nil
 }
@@ -311,7 +325,7 @@ func (s *Store) DeleteByID(id, store, path string, allWithID bool) ([]agent.Sess
 		}
 		s.mu.Lock()
 		for _, sess := range wide[1:] {
-			delete(s.cache, sess.CacheKey)
+			s.forgetLocked(sess.CacheKey)
 		}
 		s.mu.Unlock()
 		return wide, nil
@@ -378,7 +392,7 @@ func (s *Store) RelocateByID(id, store, path, newCwd string, asCopy bool) (newID
 		return "", "", err
 	}
 	s.mu.Lock()
-	delete(s.cache, sess.CacheKey) // moved/copied → old cache entry is stale
+	s.forgetLocked(sess.CacheKey) // moved/copied → old cache entry is stale
 	s.mu.Unlock()
 	return newID, target, nil
 }
@@ -409,7 +423,7 @@ func (s *Store) RenameByID(id, store, path, title string) (string, error) {
 		return "", err
 	}
 	s.mu.Lock()
-	delete(s.cache, sess.CacheKey) // the cached title is now stale
+	s.forgetLocked(sess.CacheKey) // the cached title is now stale
 	s.mu.Unlock()
 	return t, nil
 }

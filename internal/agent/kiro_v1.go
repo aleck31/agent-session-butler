@@ -154,37 +154,74 @@ func kiroV1History(blob map[string]json.RawMessage) []kiroV1Entry {
 // user prompts plus assistant messages — so the two stores' numbers are comparable,
 // which matters because the same session often exists in both.
 func (a KiroAgent) enrichV1(s Session) Session {
-	blob, err := kiroV1Blob(s)
-	if err != nil {
-		zero := 0
-		s.MessageCount = &zero
-		return s
-	}
-	history := kiroV1History(blob)
-
-	count := 0
-	title := ""
-	for _, e := range history {
-		if raw, ok := e.User.Content["Prompt"]; ok {
-			count++
-			if title == "" {
-				var p struct {
-					Prompt string `json:"prompt"`
-				}
-				if json.Unmarshal(raw, &p) == nil {
-					title = p.Prompt
-				}
-			}
-		}
-		if len(e.Assistant) > 0 {
-			count++
-		}
+	raw, err := kiroV1Raw(s)
+	count, title := 0, ""
+	if err == nil {
+		count, title = kiroV1Count(raw)
 	}
 	s.MessageCount = &count
 	if t := clampTitle(title); t != "" {
 		s.Title = t
 	}
 	return s
+}
+
+// kiroV1Raw fetches the blob undecoded; see kiroV1Blob for why the lookup is keyed on (key, id).
+func kiroV1Raw(s Session) ([]byte, error) {
+	dbPath := s.Extra["db"]
+	if dbPath == "" {
+		return nil, fmt.Errorf("session has no database reference")
+	}
+	conn, err := openRO(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	var raw []byte
+	err = conn.QueryRow(`SELECT value FROM conversations_v2 WHERE key = ? AND conversation_id = ?`,
+		s.Extra["key"], s.ID).Scan(&raw)
+	return raw, err
+}
+
+// kiroV1Count walks history without decoding it: a v1 blob is one document running to tens of MB,
+// almost all of it tool output, and only the first prompt's text is ever needed.
+func kiroV1Count(raw []byte) (count int, title string) {
+	h, ok := fieldStart(raw, "history")
+	if !ok {
+		return 0, ""
+	}
+	forEachElement(raw[h:], func(e []byte) bool {
+		if u, ok := fieldStart(e, "user"); ok {
+			if c, ok := fieldStart(e[u:], "content"); ok {
+				if p, ok := fieldStart(e[u+c:], "Prompt"); ok {
+					count++
+					if title == "" {
+						title = kiroV1PromptText(e[u+c+p:])
+					}
+				}
+			}
+		}
+		if a, ok := fieldStart(e, "assistant"); ok && nonEmptyObject(e[a:]) {
+			count++
+		}
+		return true
+	})
+	return count, title
+}
+
+// kiroV1PromptText decodes one Prompt value, which is small, to read its text.
+func kiroV1PromptText(b []byte) string {
+	end := valueEnd(b, 0)
+	if end < 0 {
+		return ""
+	}
+	var p struct {
+		Prompt string `json:"prompt"`
+	}
+	if json.Unmarshal(b[:end], &p) != nil {
+		return ""
+	}
+	return p.Prompt
 }
 
 // transcriptV1 renders a v1 conversation. Its history is already paired, so unlike

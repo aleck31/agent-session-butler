@@ -35,6 +35,7 @@ func sandbox(t *testing.T) []string {
 		"USERPROFILE="+home,
 		"CODEX_HOME="+filepath.Join(home, "nope"),
 		"HERMES_HOME="+filepath.Join(home, "nope"),
+		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
 	)
 }
 
