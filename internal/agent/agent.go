@@ -38,6 +38,8 @@ type Session struct {
 	// Extra carries agent-specific data the agent needs to act on this session
 	// later (e.g. Hermes stores its profile's HERMES_HOME for the delete CLI).
 	Extra map[string]string `json:"-"`
+	// Resume is the argv that reopens the session in its agent, nil when there is none.
+	Resume []string `json:"-"`
 }
 
 // Agent is an AI application whose sessions live on disk (files or a local DB).

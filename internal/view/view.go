@@ -30,6 +30,8 @@ type Session struct {
 	SizeHuman    string    `json:"sizeHuman"`
 	ModifiedAt   time.Time `json:"modifiedAt"` // RFC3339
 	Locked       bool      `json:"locked"`
+	// Resume is the argv that reopens the session, run from cwd; absent when the agent has none.
+	Resume []string `json:"resume,omitempty"`
 }
 
 // AgentUsage is one segment of the disk-usage bar: an agent's live (non-orphan)
@@ -95,6 +97,7 @@ func sessionsOf(g store.Group) []Session {
 			SizeHuman:    store.HumanSize(s.FileSize),
 			ModifiedAt:   s.ModifiedAt,
 			Locked:       s.Locked,
+			Resume:       s.Resume,
 		})
 	}
 	return out

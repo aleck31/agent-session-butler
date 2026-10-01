@@ -35,7 +35,9 @@ func session(id, agentName string, size int64, msgs int) agent.Session {
 // (see README "Downstream consumers") parse these exact keys — a rename or
 // removal here is a breaking change and must bump the version and notify them.
 func TestFlatContract(t *testing.T) {
-	g := liveGroup(t, session("s1", "Kiro", 2048, 12))
+	resumable := session("s1", "Kiro", 2048, 12)
+	resumable.Resume = []string{"kiro-cli", "chat", "--resume-id", "s1"}
+	g := liveGroup(t, resumable)
 	got := Flat([]string{"Kiro"}, []store.Group{g}, "0.6.1")
 
 	b, err := json.Marshal(got)
@@ -59,7 +61,7 @@ func TestFlatContract(t *testing.T) {
 	}
 	assertKeys(t, "session", sessions[0].(map[string]any),
 		"id", "agent", "cwd", "profile", "store", "orphan", "title",
-		"messageCount", "fileSize", "sizeHuman", "modifiedAt", "locked")
+		"messageCount", "fileSize", "sizeHuman", "modifiedAt", "locked", "resume")
 
 	// Every session carries its own cwd/profile/orphan so a caller needs no
 	// back-reference to a group (ADR-0002 D2).
@@ -215,5 +217,29 @@ func TestProfileReachesSessionView(t *testing.T) {
 	}
 	if got := GroupView(g).DisplayName; got == "" {
 		t.Error("displayName is empty")
+	}
+}
+
+// resume is an argv, and absent rather than empty when the agent has no resume path, so a
+// consumer can hide the action without knowing which agents support it (issue #5).
+func TestFlatResumeIsAnArgvOrAbsent(t *testing.T) {
+	with := session("a", "Kiro", 1, 1)
+	with.Resume = []string{"kiro-cli", "chat", "--resume-id", "a"}
+	without := session("b", "Hermes", 1, 1)
+	b, err := json.Marshal(Flat(nil, []store.Group{liveGroup(t, with, without)}, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := doc.Sessions[0]["resume"].([]any); !ok || len(got) != 4 || got[3] != "a" {
+		t.Errorf("resume = %v, want the argv array", doc.Sessions[0]["resume"])
+	}
+	if _, present := doc.Sessions[1]["resume"]; present {
+		t.Errorf("resume present for an agent without one: %v", doc.Sessions[1]["resume"])
 	}
 }

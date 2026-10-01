@@ -879,3 +879,44 @@ func TestSameStoreDuplicateIDNeedsCwdOrConfirmation(t *testing.T) {
 		}
 	})
 }
+
+// resumer echoes whether the store judged its id shared, so the judgement itself can be checked.
+type resumer struct{ fakeAgent }
+
+func (r *resumer) ResumeArgv(s agent.Session, shared bool) []string {
+	if shared {
+		return []string{"resume", s.ID, "shared"}
+	}
+	return []string{"resume", s.ID}
+}
+
+// Shared means the id is in another store of the same agent — wherever that copy's cwd is, so a
+// --path listing still disambiguates a v1 row whose v2 copy sits under another spelling of the dir.
+func TestResumeSeesCopiesOutsideTheDirectory(t *testing.T) {
+	v1 := sess("dup", "K", "/home/u/workplace", 100)
+	v1.Store = "v1"
+	v2 := sess("dup", "K", "/home/u/quickspace", 100)
+	v2.Store, v2.CacheKey = "v2", "K:dup:v2"
+	solo := sess("solo", "K", "/home/u/workplace", 100)
+	solo.Store = "v1"
+	other := sess("dup", "Other", "/home/u/workplace", 100) // same id, different agent
+	s := newTestStore(&resumer{fakeAgent{name: "K", sessions: []agent.Session{v1, v2, solo}}},
+		&fakeAgent{name: "Other", sessions: []agent.Session{other}})
+
+	got := map[string][]string{}
+	for _, g := range s.Scan() {
+		for _, x := range g.Sessions {
+			got[x.Agent+"/"+x.ID+"/"+x.Store] = x.Resume
+		}
+	}
+	for key, want := range map[string][]string{
+		"K/dup/v1":   {"resume", "dup", "shared"},
+		"K/dup/v2":   {"resume", "dup", "shared"},
+		"K/solo/v1":  {"resume", "solo"},
+		"Other/dup/": nil, // not a Resumer, and the K rows do not make it shared
+	} {
+		if strings.Join(got[key], " ") != strings.Join(want, " ") {
+			t.Errorf("%s: resume = %v, want %v", key, got[key], want)
+		}
+	}
+}
