@@ -350,6 +350,24 @@ func TestCodexSessionsAreNeverReportedLocked(t *testing.T) {
 	}
 }
 
+// The fake mimics Codex ≥0.158: without a TTY, delete refuses unless --force is passed.
+func TestCodexDeletePassesForceSoItWorksWithoutATerminal(t *testing.T) {
+	bin := sandboxBin(t)
+	argsFile := filepath.Join(t.TempDir(), "args")
+	writeExe(t, filepath.Join(bin, "codex"), `#!/bin/sh
+echo "$@" > `+argsFile+`
+for a in "$@"; do [ "$a" = --force ] && { echo "Deleted session."; exit 0; }; done
+echo "Error: cannot confirm session deletion without an interactive terminal; rerun with --force and a session UUID"; exit 1
+`)
+	if err := (CodexAgent{}).Delete(Session{ID: "01a111d4-4141-7aa3-892d-108ca14d0971"}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	got, _ := os.ReadFile(argsFile)
+	if want := "delete --force 01a111d4-4141-7aa3-892d-108ca14d0971\n"; string(got) != want {
+		t.Errorf("codex argv: got %q, want %q", got, want)
+	}
+}
+
 // The CacheKey must be db-scoped so a schema bump can't collide ids across DBs.
 func TestCodexCacheKeyIsDBScoped(t *testing.T) {
 	home := codexSandbox(t)

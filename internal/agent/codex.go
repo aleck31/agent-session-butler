@@ -243,9 +243,9 @@ func codexIsInjected(content []struct {
 
 // Delete removes the session via `codex delete`, which drops both the rollout
 // file and its `threads` row. Removing the file ourselves would leave the index
-// pointing at nothing.
+// pointing at nothing. --force skips only the TTY prompt (Codex ≥0.158 refuses without one); a live session is still refused.
 func (CodexAgent) Delete(s Session) error {
-	out, err := runTool("codex", "delete", s.ID)
+	out, err := runTool("codex", "delete", "--force", s.ID)
 	if err != nil {
 		msg := strings.TrimSpace(out)
 		if msg == "" {
