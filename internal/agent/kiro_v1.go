@@ -56,8 +56,23 @@ func (a KiroAgent) scanV1() []Session {
 	}
 	defer conn.Close()
 
-	rows, err := conn.Query(`SELECT conversation_id, key, updated_at, created_at,
-		length(value) FROM conversations_v2`)
+	// The timestamps are stored after `value`, so reading them from the table walks each
+	// row's overflow chain — 18s cold on a 450 MB store. The updated_at index covers them.
+	updatedAt := map[int64]int64{}
+	if trows, err := conn.Query(`SELECT rowid, updated_at FROM conversations_v2`); err == nil {
+		for trows.Next() {
+			var rowid int64
+			var ms sql.NullInt64
+			if trows.Scan(&rowid, &ms) == nil {
+				updatedAt[rowid] = ms.Int64
+			}
+		}
+		trows.Close()
+	}
+
+	// octet_length, not length: it comes from the record header, while length() on TEXT
+	// loads the whole value to count characters.
+	rows, err := conn.Query(`SELECT rowid, conversation_id, key, octet_length(value) FROM conversations_v2`)
 	if err != nil {
 		return nil
 	}
@@ -65,18 +80,21 @@ func (a KiroAgent) scanV1() []Session {
 
 	var out []Session
 	for rows.Next() {
+		var rowid int64
 		var id string
 		var cwd sql.NullString
-		var updated, created, size sql.NullInt64
-		if rows.Scan(&id, &cwd, &updated, &created, &size) != nil {
+		var size sql.NullInt64
+		if rows.Scan(&rowid, &id, &cwd, &size) != nil {
 			continue
 		}
 		c := strings.TrimSpace(cwd.String)
 		if c == "" {
 			c = "(unknown)"
 		}
-		ms := updated.Int64
-		if ms == 0 {
+		ms := updatedAt[rowid]
+		if ms == 0 { // rare enough that one row read beats indexing created_at
+			var created sql.NullInt64
+			_ = conn.QueryRow(`SELECT created_at FROM conversations_v2 WHERE rowid = ?`, rowid).Scan(&created)
 			ms = created.Int64
 		}
 		out = append(out, Session{
