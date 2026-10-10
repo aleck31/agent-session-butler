@@ -2,9 +2,11 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,7 +18,8 @@ import (
 type fakeAgent struct {
 	name      string
 	sessions  []agent.Session
-	enriched  int // how many times Enrich was called
+	mu        sync.Mutex // EnrichGroup calls Enrich concurrently
+	enriched  int        // how many times Enrich was called
 	deleted   []string
 	relocated []string
 	renamed   []string
@@ -34,7 +37,9 @@ func (f *fakeAgent) Scan() []agent.Session {
 }
 
 func (f *fakeAgent) Enrich(s agent.Session) agent.Session {
+	f.mu.Lock()
 	f.enriched++
+	f.mu.Unlock()
 	n := 42
 	s.MessageCount = &n
 	s.Title = "enriched-" + s.ID
@@ -301,6 +306,27 @@ func TestScanPrunesCacheEntriesForGoneSessions(t *testing.T) {
 }
 
 // EnrichGroup must not redo work for sessions that already carry a count.
+// Enrichment fans out across workers; every session must still come back enriched
+// in its own slot, each exactly once, with more sessions than workers.
+func TestEnrichGroupEnrichesEverySessionOnceConcurrently(t *testing.T) {
+	var ss []agent.Session
+	for i := 0; i < 3*enrichWorkers+1; i++ {
+		ss = append(ss, sess(fmt.Sprintf("k%02d", i), "Kiro", "/x", int64(1000+i)))
+	}
+	f := &fakeAgent{name: "Kiro", sessions: ss}
+	s := newTestStore(f)
+
+	g := s.EnrichGroup(s.Scan()[0])
+	if f.enriched != len(ss) {
+		t.Errorf("Enrich called %d times, want %d", f.enriched, len(ss))
+	}
+	for _, x := range g.Sessions {
+		if x.MessageCount == nil || x.Title != "enriched-"+x.ID {
+			t.Errorf("%s not enriched in its own slot: title %q", x.ID, x.Title)
+		}
+	}
+}
+
 func TestEnrichGroupSkipsAlreadyCountedSessions(t *testing.T) {
 	n := 7
 	pre := sess("k1", "Kiro", "/x", 1000)

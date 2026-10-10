@@ -199,6 +199,7 @@ func (s *Store) forgetLocked(key string) {
 // and, for some agents, the title), caching the results by mtime. Returns the
 // group with enriched sessions patched in.
 func (s *Store) EnrichGroup(g Group) Group {
+	var todo []int
 	for i, sess := range g.Sessions {
 		if sess.MessageCount != nil {
 			continue
@@ -210,23 +211,51 @@ func (s *Store) EnrichGroup(g Group) Group {
 			g.Sessions[i] = hit.apply(sess)
 			continue
 		}
-		a := s.agentNamed(sess.Agent)
-		if a == nil {
-			continue
-		}
-		enriched := a.Enrich(sess)
-		g.Sessions[i] = enriched
-		if e, ok := entryFor(sess, enriched); ok {
-			s.mu.Lock()
-			s.cache[enriched.CacheKey] = e
-			s.dirty = true
-			s.mu.Unlock()
-		}
+		todo = append(todo, i)
 	}
+
+	// Concurrent because a first visit is bound by reading whole files cold: a 186 MB
+	// directory took 3.0s one file at a time. Each worker writes only its own index.
+	work := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < min(enrichWorkers, len(todo)); w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range work {
+				s.enrichOne(g.Sessions, i)
+			}
+		}()
+	}
+	for _, i := range todo {
+		work <- i
+	}
+	close(work)
+	wg.Wait()
+
 	s.mu.Lock()
 	s.saveLocked()
 	s.mu.Unlock()
 	return g
+}
+
+// enrichWorkers bounds concurrent file reads during enrichment.
+const enrichWorkers = 8
+
+func (s *Store) enrichOne(sessions []agent.Session, i int) {
+	sess := sessions[i]
+	a := s.agentNamed(sess.Agent)
+	if a == nil {
+		return
+	}
+	enriched := a.Enrich(sess)
+	sessions[i] = enriched
+	if e, ok := entryFor(sess, enriched); ok {
+		s.mu.Lock()
+		s.cache[enriched.CacheKey] = e
+		s.dirty = true
+		s.mu.Unlock()
+	}
 }
 
 // Delete permanently removes a session, delegating to the owning agent (file
