@@ -871,19 +871,28 @@ function butler() {
       const title = this.editTitle.trim();
       this.editing = null;
       if (!title || title === s.title) return; // nothing to do
+      // Optimistic: Codex renames through a ~1s app-server round trip, which otherwise
+      // leaves the old title showing as if the edit was lost. Patched in place; a rescan would lose the scroll.
+      const old = s.title, key = this.skey(s);
+      const setTitle = t => { // by key: an enrich landing meanwhile replaces the row objects
+        const row = (this.selected?.sessions || []).find(x => this.skey(x) === key);
+        if (row) row.title = t;
+      };
+      setTitle(title);
       try {
         const r = await fetch('/api/session/' + encodeURIComponent(s.id) + '/rename', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ title, store: s.store || '', path: this.selPath() }),
         });
+        const b = await r.json().catch(() => ({}));
         if (r.ok) {
-          const b = await r.json().catch(() => ({}));
-          s.title = b.title || title; // patch in place; a rescan would lose the scroll
+          setTitle(b.title || title);
         } else {
-          const b = await r.json().catch(() => ({}));
+          setTitle(old);
           this.toast = b.error || ('Rename failed (' + r.status + ').');
         }
       } catch (_) {
+        setTitle(old);
         this.toast = 'Network error — is the server still running?';
       }
     },
