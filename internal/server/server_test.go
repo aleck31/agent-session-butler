@@ -359,3 +359,64 @@ func TestDeleteRefusesASharedIDEvenWithACwd(t *testing.T) {
 		t.Errorf("error %q should name the flag that proceeds", msg)
 	}
 }
+
+// writeClaudeSession drops a minimal Claude Code session under the sandbox home.
+func writeClaudeSession(t *testing.T, home, cwd, id string) {
+	t.Helper()
+	dir := filepath.Join(home, ".claude", "projects", "proj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line := `{"type":"user","cwd":"` + cwd + `","sessionId":"` + id + `","message":{"role":"user","content":"hi"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func enrichedIDs(t *testing.T, h http.Handler, cwd string) []string {
+	t.Helper()
+	w := do(t, h, http.MethodPost, "/api/enrich", `{"cwd":"`+cwd+`"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("enrich: status %d: %s", w.Code, w.Body)
+	}
+	var g struct {
+		Sessions []struct {
+			ID string `json:"id"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &g); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, s := range g.Sessions {
+		ids = append(ids, s.ID)
+	}
+	return ids
+}
+
+// Opening a directory enriches the scan behind the loaded groups instead of rescanning
+// the machine; anything that changes sessions drops that snapshot.
+func TestEnrichReusesTheGroupsScanUntilAMutation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HERMES_HOME", filepath.Join(home, ".hermes"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	writeClaudeSession(t, home, "/proj/c", "s1")
+	h := New("test-version").Handler()
+
+	if w := do(t, h, http.MethodGet, "/api/groups", ""); w.Code != http.StatusOK {
+		t.Fatalf("groups: status %d", w.Code)
+	}
+	writeClaudeSession(t, home, "/proj/c", "s2") // appears on disk after the UI loaded
+	if ids := enrichedIDs(t, h, "/proj/c"); strings.Join(ids, ",") != "s1" {
+		t.Errorf("enrich before any mutation: got %v, want [s1] from the snapshot", ids)
+	}
+
+	if w := do(t, h, http.MethodDelete, "/api/session/s1", ""); w.Code != http.StatusNoContent {
+		t.Fatalf("delete: status %d: %s", w.Code, w.Body)
+	}
+	if ids := enrichedIDs(t, h, "/proj/c"); strings.Join(ids, ",") != "s2" {
+		t.Errorf("enrich after a delete: got %v, want [s2] from a fresh scan", ids)
+	}
+}

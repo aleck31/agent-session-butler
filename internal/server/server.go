@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/aleck/agent-session-butler/internal/agent"
 	"github.com/aleck/agent-session-butler/internal/store"
@@ -27,6 +28,46 @@ type Server struct {
 	store   *store.Store
 	mux     *http.ServeMux
 	version string
+
+	// snap is the scan behind the groups the UI last loaded, so opening a directory
+	// enriches it without rescanning the machine. Mutations drop it; their own lock
+	// checks always rescan (store.findAll), so a stale `locked` here is display-only.
+	snapMu sync.Mutex
+	snap   []store.Group
+}
+
+// scan rescans and keeps the result as the snapshot.
+func (s *Server) scan() []store.Group {
+	groups := s.store.Scan()
+	s.snapMu.Lock()
+	s.snap = groups
+	s.snapMu.Unlock()
+	return groups
+}
+
+// invalidate drops the snapshot after anything that changed sessions on disk.
+func (s *Server) invalidate() {
+	s.snapMu.Lock()
+	s.snap = nil
+	s.snapMu.Unlock()
+}
+
+// snapGroup returns a copy of one group from the snapshot, rescanning if there is none.
+// A copy, because EnrichGroup writes into its sessions and requests run concurrently.
+func (s *Server) snapGroup(cwd, profile string) (store.Group, bool) {
+	s.snapMu.Lock()
+	groups := s.snap
+	s.snapMu.Unlock()
+	if groups == nil {
+		groups = s.scan()
+	}
+	for _, g := range groups {
+		if g.Cwd == cwd && g.Profile == profile {
+			g.Sessions = append([]agent.Session(nil), g.Sessions...)
+			return g, true
+		}
+	}
+	return store.Group{}, false
 }
 
 // New builds a server backed by the default store. version is surfaced to the
@@ -56,7 +97,7 @@ func (s *Server) Handler() http.Handler { return s.mux }
 // --- handlers ---------------------------------------------------------------
 
 func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
-	groups := s.store.Scan()
+	groups := s.scan()
 	writeJSON(w, http.StatusOK, view.Grouped(s.store.InstalledAgents(), groups, s.version))
 }
 
@@ -73,16 +114,15 @@ func (s *Server) handleEnrich(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "expected JSON body with a non-empty \"cwd\"")
 		return
 	}
-	for _, g := range s.store.Scan() {
-		if g.Cwd == req.Cwd && g.Profile == req.Profile {
-			writeJSON(w, http.StatusOK, view.GroupView(s.store.EnrichGroup(g)))
-			return
-		}
+	if g, ok := s.snapGroup(req.Cwd, req.Profile); ok {
+		writeJSON(w, http.StatusOK, view.GroupView(s.store.EnrichGroup(g)))
+		return
 	}
 	writeError(w, http.StatusNotFound, "no directory group for that cwd/profile")
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	defer s.invalidate() // even on failure: a batch may have partly succeeded
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "missing session id")
@@ -111,6 +151,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 // handleRelocate moves (or copies, if body.copy) a session to a new cwd.
 // Body: {"newCwd": "...", "copy": bool}. Returns {"id": <resulting id>}.
 func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
+	defer s.invalidate()
 	id := r.PathValue("id")
 	var req struct {
 		NewCwd string `json:"newCwd"`
@@ -135,6 +176,7 @@ func (s *Server) handleRelocate(w http.ResponseWriter, r *http.Request) {
 // Body: {"title": "..."}. Returns {"title": <what was written>}, which is the
 // trimmed form rather than the raw input.
 func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
+	defer s.invalidate()
 	id := r.PathValue("id")
 	var req struct {
 		Title string `json:"title"`
