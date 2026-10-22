@@ -91,9 +91,9 @@ func TestKiroV1CountWalk(t *testing.T) {
 		"cut off mid-history":      {`{"history":[` + prompt("q") + `,{"user":{"content":{"Pro`, "q", 2},
 		"garbage between elements": {`{"history":[` + prompt("q") + ` x ` + prompt("r") + `]}`, "q", 2},
 	} {
-		count, title := kiroV1Count([]byte(tc.blob))
-		if count != tc.count || title != tc.title {
-			t.Errorf("%s: kiroV1Count = (%d, %q), want (%d, %q)", name, count, title, tc.count, tc.title)
+		got, title := kiroV1Count([]byte(tc.blob))
+		if count := got.user + got.agent; count != tc.count || title != tc.title {
+			t.Errorf("%s: kiroV1Count = (%d, %q), want (%d, %q)", name, got.user+got.agent, title, tc.count, tc.title)
 		}
 	}
 }

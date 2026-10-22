@@ -37,6 +37,8 @@ func session(id, agentName string, size int64, msgs int) agent.Session {
 func TestFlatContract(t *testing.T) {
 	resumable := session("s1", "Kiro", 2048, 12)
 	resumable.Resume = []string{"kiro-cli", "chat", "--resume-id", "s1"}
+	u, a, tc := 4, 8, 5
+	resumable.Breakdown = &agent.Breakdown{User: &u, Agent: &a, ToolCalls: &tc}
 	g := liveGroup(t, resumable)
 	got := Flat([]string{"Kiro"}, []store.Group{g}, "0.6.1")
 
@@ -61,7 +63,10 @@ func TestFlatContract(t *testing.T) {
 	}
 	assertKeys(t, "session", sessions[0].(map[string]any),
 		"id", "agent", "cwd", "profile", "store", "orphan", "title",
-		"messageCount", "fileSize", "sizeHuman", "modifiedAt", "locked", "resume")
+		"messageCount", "fileSize", "sizeHuman", "modifiedAt", "locked", "resume", "breakdown")
+	// thinking is absent here because this store does not record it — absent, not 0.
+	assertKeys(t, "breakdown", sessions[0].(map[string]any)["breakdown"].(map[string]any),
+		"user", "agent", "toolCalls")
 
 	// Every session carries its own cwd/profile/orphan so a caller needs no
 	// back-reference to a group (ADR-0002 D2).

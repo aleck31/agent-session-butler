@@ -179,7 +179,7 @@ var codexInjectedUserTags = []string{
 // rows holding a user or assistant message. Reasoning, function calls, tool
 // output and `developer` messages are excluded — they aren't turns.
 func (a CodexAgent) Enrich(s Session) Session {
-	count := 0
+	t := tally{thinking: new(int)} // reasoning is encrypted, but each item is still one step of it
 	if len(s.FilePaths) > 0 {
 		forEachLineBytes(s.FilePaths[0], func(line []byte) bool {
 			// Tool calls and their output are response_items too, so filter on payload.type before decoding.
@@ -190,7 +190,15 @@ func (a CodexAgent) Enrich(s Session) Session {
 			if !ok {
 				return true
 			}
-			if pt, _ := topLevelString(line[j:], "type"); pt != "message" {
+			switch pt, _ := topLevelString(line[j:], "type"); pt {
+			case "message":
+			case "function_call", "custom_tool_call", "tool_search_call", "local_shell_call", "web_search_call":
+				t.tools++
+				return true
+			case "reasoning":
+				t.think()
+				return true
+			default:
 				return true
 			}
 			var row struct {
@@ -211,17 +219,16 @@ func (a CodexAgent) Enrich(s Session) Session {
 			}
 			switch row.Payload.Role {
 			case "assistant":
-				count++
+				t.agent++
 			case "user":
 				if !codexIsInjected(row.Payload.Content) {
-					count++
+					t.user++
 				}
 			}
 			return true
 		})
 	}
-	s.MessageCount = &count
-	return s
+	return t.apply(s)
 }
 
 // codexIsInjected reports whether a user message is one of Codex's injected

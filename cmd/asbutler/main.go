@@ -98,7 +98,7 @@ Usage:
   asbutler help                 Show this help
 
 An id is not always unique. rm, mv, cp, rename and show take:
-    [--store v1|v2]             Which store, when an id is in more than one
+    [--store v1|v2|v3]          Which store, when an id is in more than one
     [--path <dir>]              Which directory, when an id is in one store twice
 
 `)

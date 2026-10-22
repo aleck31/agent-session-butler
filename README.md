@@ -23,18 +23,20 @@ A single static Go binary. Runs on Linux, macOS, and Windows. Provides a termina
 
 | Agent | Session storage |
 |-------|-----------------|
-| Kiro | two stores: files under `~/.kiro/sessions/cli/` (v2) and rows in `data.sqlite3` (v1) |
+| Kiro | three stores: rows in `data.sqlite3` (v1), files under `~/.kiro/sessions/cli/` (v2), and one directory per session under `~/.kiro/sessions/<sha256(cwd)[:16]>/` (v3) |
 | Claude Code | `~/.claude/projects/<encoded-cwd>/*.jsonl` |
 | Codex | rollout `.jsonl` files indexed by `threads` in `$CODEX_HOME/state_<n>.sqlite` (default `~/.codex`) |
 | Hermes | SQLite `state.db` per profile under `$HERMES_HOME` (default `~/.hermes`) |
 
 Most agents keep sessions as files; **Hermes** stores them as rows in a per-profile SQLite database. The tool opens each `state.db` read-only (respecting the gateway's WAL writes) and never writes to it — deletion goes through `hermes sessions delete`, which also clears the FTS index. Only interactive CLI sessions are shown (`source = cli`); channel, cron, and imported sessions have no meaningful working directory and are skipped, keeping Hermes in the same "sessions you ran in a directory" scope as Kiro and Claude Code. Since a DB-backed session has no file size, its size is the total byte length of its message content. Sessions are grouped by profile as well as cwd — the same directory under different Hermes profiles forms distinct groups, labelled `name <profile>` (the root database is the `default` profile). A Hermes session is lock-protected only when its profile's gateway is running and that session is the one the gateway currently holds.
 
-**Kiro** keeps two session stores and the same id can be in both: opening a v1 session copies it into v2 under that id and leaves the original behind. Rows therefore carry a `store` of `v1` or `v2` — the names Kiro's own CLI uses — and a shared id appears once per store, so the stale copy is visible and can be cleaned up. The store is not part of the grouping key: a directory's v1 and v2 sessions sit next to each other, which is how you spot the duplicate.
+**Kiro** keeps three session stores, one per engine, and opening a session in a newer engine copies it and leaves the original behind: a v1 session reopened in v2 keeps its id, and a v2 session reopened in v3 becomes `cli_<id>_<suffix>` — one v2 session here had three v3 descendants. Rows therefore carry a `store` of `v1`, `v2` or `v3` — the names Kiro's own CLI uses — so each stale copy is visible and can be cleaned up. The store is not part of the grouping key: a directory's v1 and v2 sessions sit next to each other, which is how you spot the duplicate.
 
 A v1 id is not unique even within v1. The table's primary key is `(key, conversation_id)`, where `key` is the cwd, so the same id can hold two unrelated conversations under different directories — three such ids existed in a real 53-session store, with different lengths and content. Identity in v1 is therefore `(cwd, id)`: the blob lookup and the enrichment cache are both keyed on the pair, since keying on the id alone served whichever row SQLite reached first and mislabelled both.
 
 So `rm`, `mv`, `cp`, `rename` and `show` accept `--store v1|v2` to pick a store and `--path <dir>` to pick a directory, and refuse rather than guess when an id is still ambiguous. Deleting one store's copy of a shared id is precise — verified: removing the v1 copy left the v2 copy's files byte-identical — but only because every call passes `--session-source`, which defaults to *both* stores when omitted. Within a store it is the exception that no narrowing can fix: `kiro-cli chat --delete-session` takes the id and ignores the cwd, so every conversation sharing that id goes at once (verified). `rm` refuses such an id until `--all-with-id` says to proceed, and then reports every directory the delete took — honouring `--path` there would look precise while silently removing the others. v1 sessions can be listed, read and deleted; renaming and relocating are refused, because v1 stores no title (Kiro shows the first message) and keys conversations by cwd inside its own database.
+
+A v3 session is a directory, `sessions/<hash>/<id>/`, holding `session.json` (title, `workspacePaths`) and `messages.jsonl`, one row per user message, assistant text segment, tool call or tool result. Its id is the directory name and unique on its own. Deletion goes through `kiro-cli chat --delete-session <id> --session-source v3` — accepted though its help lists only v1 and v2 — and is then checked on disk, because kiro-cli reports `Deleted` even for an id it never had. Kiro lists v3 titles from a per-directory index it does not refresh when `session.json` changes, so `rename` removes that index and Kiro rebuilds it. Relocation is refused for now: the store files a session under a hash of its cwd as well as recording the cwd. `kiro-cli chat -l --all-cwds` omits v3 entirely; per directory, `kiro-cli chat -l` and asbutler list the same v3 sessions.
 
 **Codex** is a hybrid: conversation content lives in per-session rollout files (`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`) while an index of every session lives in the `threads` table of `$CODEX_HOME/state_<n>.sqlite`. The index is authoritative — Codex is migrating off the files, as its own `migrate-rollouts` command implies — so scanning reads only the DB (read-only, one indexed query, no file reads) and a rollout is opened only to count messages. Deletion shells out to `codex delete`, because removing a rollout file directly would leave a dangling `threads` row that Codex's session picker would list as a session whose content is gone. The `_<n>` suffix is a schema version Codex bumps, so the newest `state_<n>.sqlite` is selected rather than a fixed name.
 
@@ -123,7 +125,7 @@ What each agent can supply differs, and these gaps are in the data rather than u
 
 | Agent | Per-message time | Reasoning |
 |-------|------------------|-----------|
-| Kiro | not recorded | available |
+| Kiro | v3 only | v1 and v2 |
 | Claude Code | available | available |
 | Codex | available | encrypted by Codex |
 | Hermes | available | not stored |
@@ -142,7 +144,7 @@ Titles come from a session's first prompt, which makes several sessions on one t
 
 | Agent | How the title is set |
 |-------|----------------------|
-| Kiro | the `title` field in the session's `.json` |
+| Kiro | the `title` field in the session's `.json` (v2), or in `session.json` with the directory's `.index` dropped so Kiro rebuilds it (v3) |
 | Claude Code | the `custom-title` rows in the session's `.jsonl` |
 | Codex | the app-server's JSON-RPC `thread/name/set` |
 | Hermes | `hermes sessions rename` |
@@ -159,13 +161,14 @@ The `list` JSON is a contract, not just output — at least one tool parses it, 
 
 | Consumer | How it calls | Fields it reads |
 |---|---|---|
-| [tabby-agent-sessions](https://github.com/aleck31/tabby-agent-sessions) (private) | `execFile` → `asbutler list --path <cwd>` | `agent`, `cwd`, `title`, `messageCount`, `sizeHuman`, `modifiedAt`, `locked`, `id`, `store`, `resume` |
+| [tabby-agent-sessions](https://github.com/aleck31/tabby-agent-sessions) (private) | `execFile` → `asbutler list --path <cwd>` | `agent`, `cwd`, `title`, `messageCount`, `sizeHuman`, `modifiedAt`, `locked`, `id`, `store`, `resume`, `breakdown` |
 
 What that pins down, for anyone changing this code:
 
 - **The `{summary, sessions[]}` shape and those key names.** Renaming or removing one breaks the consumer's sidebar. `internal/view/view_test.go` asserts the exact key set, so such a change fails the test rather than shipping silently — when you do mean it, update the test, bump the version, and tell the consumer.
 - **`--path` must narrow *before* enrichment.** This is the whole point of ADR-0002 D2. Moving the filter after enrichment would take an interactive query from ~1s back to ~36s on a real machine, which is a performance regression the consumer feels directly.
 - **`asbutler list` must keep defaulting to JSON** (since 0.5.4) and `--path` must keep its exact-directory, non-recursive, literal-path semantics. A consumer should pass the same spelling the session was recorded under; resolving symlinks would merge two directories' lists into one.
+- **`messageCount` is a person's messages plus the agent's replies, one per model response, for every agent.** `breakdown` splits it into `user` and `agent` and adds `toolCalls` and `thinking`; a part the agent does not record is absent, not 0 (Hermes and Kiro's v1/v3 record no thinking). Since 0.8.7: before, Claude Code counted every line of its transcript — one per content block, tool results included — so its totals were about 2.5× the conversation, and Kiro v3 counted text segments.
 - **`resume` is the argv that reopens a session in its agent**, to be run from the row's `cwd` in the user's own shell: `claude --resume <id>`, `codex resume <id>`, `kiro-cli chat --resume-id <id>`. It is already disambiguated — a Kiro v1 row whose id also has a v2 copy gets `--agent-engine v1`, judged over the whole machine rather than the listed directory — and absent when there is no resume path, which today means Hermes (resuming a non-default profile is unverified). The binary is bare, not resolved: the command belongs to the user's shell and possibly another host, not to asbutler's `PATH`. A consumer needs no per-agent table.
 - **Pass the `cwd` back as `--path` on every mutation.** An id identifies a session only together with its store and directory (see Kiro, above). A consumer that already knows the directory it listed should send it, or an operation on a Kiro v1 id can be refused as ambiguous.
 - **A consumer spawned from a GUI or by `ssh host cmd` does not get the shell's `PATH`.** Mutations delegate to each agent's own CLI, so asbutler resolves each one in order: an `ASBUTLER_<TOOL>` override (`ASBUTLER_KIRO_CLI`, `ASBUTLER_CODEX`, …), the inherited `PATH`, the usual install locations (`~/.local/bin`, `~/.toolbox/bin`, Homebrew, …), and finally the `PATH` an interactive login shell builds — the same lookup `which` sees, at the cost of one shell start (~0.1s) and only when the earlier steps miss. The tool's own directory is put first on its `PATH`, so a `#!/usr/bin/env node` install finds the node beside it. Each call is bounded at 60s, and the timeout kills the tool's whole process group, since wrappers like the toolbox shim run the real tool as a child. `list` never runs an agent CLI.

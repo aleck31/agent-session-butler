@@ -15,9 +15,10 @@ import (
 
 // cacheEntry is only what Enrich adds; everything else, Locked included, comes from the current scan.
 type cacheEntry struct {
-	MTime time.Time `json:"mtime"`
-	Size  int64     `json:"size"`
-	Count int       `json:"count"`
+	MTime     time.Time        `json:"mtime"`
+	Size      int64            `json:"size"`
+	Count     int              `json:"count"`
+	Breakdown *agent.Breakdown `json:"breakdown,omitempty"`
 	// Title is nil when Enrich left the scanned title alone, so a title the scan reads fresh
 	// (Codex's, from its index) is never overridden by an old copy.
 	Title *string `json:"title,omitempty"`
@@ -30,6 +31,7 @@ func (e cacheEntry) valid(s agent.Session) bool {
 func (e cacheEntry) apply(s agent.Session) agent.Session {
 	n := e.Count
 	s.MessageCount = &n
+	s.Breakdown = e.Breakdown
 	if e.Title != nil {
 		s.Title = *e.Title
 	}
@@ -41,7 +43,7 @@ func entryFor(scanned, enriched agent.Session) (cacheEntry, bool) {
 	if enriched.MessageCount == nil {
 		return cacheEntry{}, false
 	}
-	e := cacheEntry{MTime: enriched.ModifiedAt, Size: enriched.FileSize, Count: *enriched.MessageCount}
+	e := cacheEntry{MTime: enriched.ModifiedAt, Size: enriched.FileSize, Count: *enriched.MessageCount, Breakdown: enriched.Breakdown}
 	if enriched.Title != scanned.Title {
 		t := enriched.Title
 		e.Title = &t

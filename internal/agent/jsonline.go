@@ -158,6 +158,18 @@ func isDelim(c byte) bool {
 	return false
 }
 
+// forEachPart follows a path of object fields to an array and calls handle with each element.
+func forEachPart(obj []byte, handle func(elem []byte), path ...string) {
+	for _, key := range path {
+		j, ok := fieldStart(obj, key)
+		if !ok {
+			return
+		}
+		obj = obj[j:]
+	}
+	forEachElement(obj, func(e []byte) bool { handle(e); return true })
+}
+
 // nonEmptyObject reports whether b starts with an object holding at least one member.
 func nonEmptyObject(b []byte) bool {
 	return len(b) > 0 && b[0] == '{' && skipSpace(b, 1) < len(b) && b[skipSpace(b, 1)] != '}'

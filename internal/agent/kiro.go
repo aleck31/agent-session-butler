@@ -41,15 +41,18 @@ func (KiroAgent) Installed() bool {
 			return true
 		}
 	}
-	// A machine that only ever used the old store still has Kiro sessions.
-	return fileExists(kiroDBPath())
+	// A machine that only ever used the v1 or v3 store still has Kiro sessions.
+	if fileExists(kiroDBPath()) {
+		return true
+	}
+	info, err := os.Stat(kiroSessionsRoot())
+	return err == nil && info.IsDir()
 }
 
-// Scan covers both of Kiro's stores. The same id can appear in each — opening a
-// v1 session copies it to v2 and leaves the original — so rows carry a Store and
-// are not merged (ADR-0006).
+// Scan covers all three of Kiro's stores. Opening a session in a newer engine copies it and leaves
+// the original, so rows carry a Store and are not merged (ADR-0006).
 func (a KiroAgent) Scan() []Session {
-	return append(a.scanV2(), a.scanV1()...)
+	return append(append(a.scanV2(), a.scanV1()...), a.scanV3()...)
 }
 
 func (a KiroAgent) scanV2() []Session {
@@ -207,8 +210,11 @@ func kiroDecodeMeta(r io.Reader) (kiroMeta, bool) {
 // Delete removes the session's file bundle. Kiro sessions are plain files with
 // no shadow index, so removing them directly is safe.
 func (a KiroAgent) Delete(s Session) error {
-	if s.Store == kiroStoreV1 {
+	switch s.Store {
+	case kiroStoreV1:
 		return a.deleteV1(s)
+	case kiroStoreV3:
+		return a.deleteV3(s)
 	}
 	return deleteFiles(s)
 }
@@ -220,6 +226,10 @@ func (KiroAgent) Relocate(s Session, newCwd string, asCopy bool) (string, error)
 	// mean writing that database, which is Kiro's to write.
 	if s.Store == kiroStoreV1 {
 		return "", fmt.Errorf("%w: not for Kiro's v1 store", ErrRelocateUnsupported)
+	}
+	// v3 files a session under a hash of its cwd as well as recording it, and keeps an index there.
+	if s.Store == kiroStoreV3 {
+		return "", fmt.Errorf("%w: not yet for Kiro's v3 store", ErrRelocateUnsupported)
 	}
 	jsonPath := s.CacheKey // Kiro's CacheKey is the .json path
 	sid := s.ID
@@ -251,12 +261,15 @@ func kiroSetJSON(jsonPath, sid, cwd string) error {
 
 // Rename writes the new title into the session's .json, which is where Kiro
 // reads it from — so Kiro's own listing shows it too.
-func (KiroAgent) Rename(s Session, title string) error {
+func (a KiroAgent) Rename(s Session, title string) error {
 	// v1 has no title field: Kiro derives the label from the first user message, so
 	// renaming would mean rewriting what the person typed. This tool changes a cwd
 	// association and a title, never conversation content.
 	if s.Store == kiroStoreV1 {
 		return fmt.Errorf("%w: Kiro's v1 store has no title field — it shows the first message", ErrRenameUnsupported)
+	}
+	if s.Store == kiroStoreV3 {
+		return a.renameV3(s, title)
 	}
 	return kiroPatchJSON(s.CacheKey, map[string]any{"title": title}) // CacheKey is the .json path
 }
@@ -288,8 +301,11 @@ func kiroPatchJSON(jsonPath string, fields map[string]any) error {
 // (user) and AssistantMessage events. Tool results and compaction events are
 // excluded — they aren't conversation messages.
 func (a KiroAgent) Enrich(s Session) Session {
-	if s.Store == kiroStoreV1 {
+	switch s.Store {
+	case kiroStoreV1:
 		return a.enrichV1(s)
+	case kiroStoreV3:
+		return a.enrichV3(s)
 	}
 	var jsonlPath string
 	for _, p := range s.FilePaths {
@@ -298,21 +314,30 @@ func (a KiroAgent) Enrich(s Session) Session {
 			break
 		}
 	}
-	count := 0
+	t := tally{thinking: new(int)}
 	if jsonlPath != "" {
 		forEachLineBytes(jsonlPath, func(line []byte) bool {
 			if !completeLine(line) {
 				return true
 			}
 			switch kind, _ := topLevelString(line, "kind"); kind {
-			case "Prompt", "AssistantMessage":
-				count++
+			case "Prompt":
+				t.user++
+			case "AssistantMessage":
+				t.agent++
+				forEachPart(line, func(part []byte) {
+					switch k, _ := topLevelString(part, "kind"); k {
+					case "toolUse":
+						t.tools++
+					case "thinking":
+						t.think()
+					}
+				}, "data", "content")
 			}
 			return true
 		})
 	}
-	s.MessageCount = &count
-	return s
+	return t.apply(s)
 }
 
 // kiroLockLive is true only if the lock exists AND its PID is a live process.
@@ -386,8 +411,11 @@ func cleanTitle(raw *string, sid string) string {
 // Transcript reads Kiro's .jsonl event stream. Kiro records no per-message
 // timestamp, so Turn.At is always nil; a Prompt event is always real user input.
 func (a KiroAgent) Transcript(s Session, opts TranscriptOptions) ([]Turn, error) {
-	if s.Store == kiroStoreV1 {
+	switch s.Store {
+	case kiroStoreV1:
 		return a.transcriptV1(s, opts)
+	case kiroStoreV3:
+		return a.transcriptV3(s, opts)
 	}
 	var jsonl string
 	for _, p := range s.FilePaths {

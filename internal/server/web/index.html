@@ -194,6 +194,7 @@
   .tx-tool-size { color: var(--faint); font-variant-numeric: tabular-nums; }
   .tx-tool pre, .tx-think pre { flex-basis: 100%; margin: 4px 0 0; padding: 7px 9px; background: var(--panel-2);
     border-radius: 4px; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; }
+  td.num .tools { display: block; font-size: 10.5px; color: var(--faint); }
   .storetag { margin-left: 5px; padding: 0 4px; border-radius: 3px; font-size: 10px;
     background: var(--panel-2); color: var(--faint); border: 1px solid var(--line);
     font-variant-numeric: tabular-nums; }
@@ -434,7 +435,7 @@
                       <span class="storetag" x-show="s.store" x-text="s.store"
                             :title="`Stored in this agent's ${s.store} store`"></span>
                     </td>
-                    <td class="num" x-text="s.messageCount != null ? s.messageCount + ' msgs' : '·'"></td>
+                    <td class="num" :title="breakdownTip(s)"><span x-text="s.messageCount != null ? s.messageCount + ' msgs' : '·'"></span><span class="tools" x-show="s.breakdown?.toolCalls" x-text="s.breakdown?.toolCalls + ' tools'"></span></td>
                     <td class="num" x-text="s.sizeHuman"></td>
                     <td x-text="fmtDate(s.modifiedAt)"></td>
                     <td class="id c-id">
@@ -590,6 +591,12 @@ function butler() {
     selectedIds: new Set(),
     skey(s) { return s.id + '\u0000' + (s.store || ''); },
     unkey(k) { const [id, store] = k.split('\u0000'); return { id, store: store || '' }; },
+    // Every part the store records; absent ones are left out rather than shown as 0.
+    breakdownTip(s) {
+      const b = s.breakdown; if (!b) return '';
+      return [['user', 'user'], ['agent', 'agent'], ['toolCalls', 'tool calls'], ['thinking', 'thinking']]
+        .filter(([k]) => b[k] != null).map(([k, label]) => `${b[k]} ${label}`).join(' · ');
+    },
     storeQuery(s) { return s.store ? '?store=' + encodeURIComponent(s.store) : ''; },
     // The cwd on show: within one store an id can name a different conversation
     // under another directory, and the UI always knows which one it is looking at.

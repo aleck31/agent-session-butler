@@ -8,6 +8,7 @@ package view
 import (
 	"time"
 
+	"github.com/aleck/agent-session-butler/internal/agent"
 	"github.com/aleck/agent-session-butler/internal/store"
 )
 
@@ -32,6 +33,9 @@ type Session struct {
 	Locked       bool      `json:"locked"`
 	// Resume is the argv that reopens the session, run from cwd; absent when the agent has none.
 	Resume []string `json:"resume,omitempty"`
+	// Breakdown splits messageCount by kind and adds tool calls and thinking; parts a store
+	// does not record are absent. Null until enriched, like messageCount.
+	Breakdown *agent.Breakdown `json:"breakdown,omitempty"`
 }
 
 // AgentUsage is one segment of the disk-usage bar: an agent's live (non-orphan)
@@ -98,6 +102,7 @@ func sessionsOf(g store.Group) []Session {
 			ModifiedAt:   s.ModifiedAt,
 			Locked:       s.Locked,
 			Resume:       s.Resume,
+			Breakdown:    s.Breakdown,
 		})
 	}
 	return out

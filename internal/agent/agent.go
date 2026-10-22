@@ -26,7 +26,7 @@ type Session struct {
 	ModifiedAt   time.Time `json:"modifiedAt"`   // newest mtime (file agents) / ended_at (Hermes)
 	Locked       bool      `json:"locked"`       // held by a live process (a running agent owns the lock)
 	// Store names the backing store when an agent keeps more than one and the same
-	// id can appear in each. Kiro does: "v1" and "v2", the names its own CLI uses.
+	// id can appear in each. Kiro does: "v1", "v2" and "v3", the names its own CLI uses.
 	// Empty for agents with a single store.
 	Store string `json:"store"`
 
@@ -40,6 +40,38 @@ type Session struct {
 	Extra map[string]string `json:"-"`
 	// Resume is the argv that reopens the session in its agent, nil when there is none.
 	Resume []string `json:"-"`
+	// Breakdown splits MessageCount and adds tool calls and thinking; nil until enriched.
+	Breakdown *Breakdown `json:"-"`
+}
+
+// Breakdown is a session's activity by kind. MessageCount is always User + Agent — a person's
+// messages plus the agent's replies, one per model response — so it means the same for every
+// store; a part the store does not record is nil rather than 0.
+type Breakdown struct {
+	User      *int `json:"user,omitempty"`
+	Agent     *int `json:"agent,omitempty"`
+	ToolCalls *int `json:"toolCalls,omitempty"`
+	Thinking  *int `json:"thinking,omitempty"`
+}
+
+// tally accumulates a Breakdown in one pass over a session; thinking stays nil for stores without it.
+type tally struct {
+	user, agent, tools int
+	thinking           *int
+}
+
+func (t *tally) think() {
+	if t.thinking == nil {
+		t.thinking = new(int)
+	}
+	*t.thinking++
+}
+
+func (t tally) apply(s Session) Session {
+	n, u, a, tc := t.user+t.agent, t.user, t.agent, t.tools
+	s.MessageCount = &n
+	s.Breakdown = &Breakdown{User: &u, Agent: &a, ToolCalls: &tc, Thinking: t.thinking}
+	return s
 }
 
 // Agent is an AI application whose sessions live on disk (files or a local DB).

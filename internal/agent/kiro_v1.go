@@ -173,13 +173,14 @@ func kiroV1History(blob map[string]json.RawMessage) []kiroV1Entry {
 // which matters because the same session often exists in both.
 func (a KiroAgent) enrichV1(s Session) Session {
 	raw, err := kiroV1Raw(s)
-	count, title := 0, ""
+	var t tally
+	title := ""
 	if err == nil {
-		count, title = kiroV1Count(raw)
+		t, title = kiroV1Count(raw)
 	}
-	s.MessageCount = &count
-	if t := clampTitle(title); t != "" {
-		s.Title = t
+	s = t.apply(s)
+	if ct := clampTitle(title); ct != "" {
+		s.Title = ct
 	}
 	return s
 }
@@ -203,16 +204,16 @@ func kiroV1Raw(s Session) ([]byte, error) {
 
 // kiroV1Count walks history without decoding it: a v1 blob is one document running to tens of MB,
 // almost all of it tool output, and only the first prompt's text is ever needed.
-func kiroV1Count(raw []byte) (count int, title string) {
+func kiroV1Count(raw []byte) (t tally, title string) {
 	h, ok := fieldStart(raw, "history")
 	if !ok {
-		return 0, ""
+		return t, ""
 	}
 	forEachElement(raw[h:], func(e []byte) bool {
 		if u, ok := fieldStart(e, "user"); ok {
 			if c, ok := fieldStart(e[u:], "content"); ok {
 				if p, ok := fieldStart(e[u+c:], "Prompt"); ok {
-					count++
+					t.user++
 					if title == "" {
 						title = kiroV1PromptText(e[u+c+p:])
 					}
@@ -220,11 +221,12 @@ func kiroV1Count(raw []byte) (count int, title string) {
 			}
 		}
 		if a, ok := fieldStart(e, "assistant"); ok && nonEmptyObject(e[a:]) {
-			count++
+			t.agent++
+			forEachPart(e[a:], func([]byte) { t.tools++ }, "ToolUse", "tool_uses")
 		}
 		return true
 	})
-	return count, title
+	return t, title
 }
 
 // kiroV1PromptText decodes one Prompt value, which is small, to read its text.

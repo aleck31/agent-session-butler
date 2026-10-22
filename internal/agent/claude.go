@@ -154,7 +154,8 @@ func (ClaudeCodeAgent) primaryFile(s Session) string {
 // binary). Reading ai-title alone showed the generated summary for a session the
 // user had named with Claude's /rename, so the listing disagreed with the agent.
 func (a ClaudeCodeAgent) Enrich(s Session) Session {
-	count := 0
+	t := tally{thinking: new(int)}
+	replies := map[string]bool{} // Claude writes one line per content block, all sharing the reply's id
 	var customTitle, aiTitle, firstUserText string
 	forEachLineBytes(a.primaryFile(s), func(line []byte) bool {
 		if !completeLine(line) {
@@ -162,15 +163,18 @@ func (a ClaudeCodeAgent) Enrich(s Session) Session {
 		}
 		switch typ, _ := topLevelString(line, "type"); typ {
 		case "custom-title":
-			if t, ok := topLevelString(line, "customTitle"); ok {
-				customTitle = t
+			if v, ok := topLevelString(line, "customTitle"); ok {
+				customTitle = v
 			}
 		case "ai-title":
-			if t, ok := topLevelString(line, "aiTitle"); ok {
-				aiTitle = t
+			if v, ok := topLevelString(line, "aiTitle"); ok {
+				aiTitle = v
 			}
 		case "user":
-			count++
+			if !claudeTypedByPerson(line) {
+				return true
+			}
+			t.user++
 			// Only the first user line's text is needed, so only it pays for a full decode.
 			if firstUserText == "" {
 				var obj struct {
@@ -181,7 +185,22 @@ func (a ClaudeCodeAgent) Enrich(s Session) Session {
 				}
 			}
 		case "assistant":
-			count++
+			m, ok := fieldStart(line, "message")
+			if !ok {
+				return true
+			}
+			if id, _ := topLevelString(line[m:], "id"); id == "" || !replies[id] {
+				replies[id] = id != ""
+				t.agent++
+			}
+			forEachPart(line[m:], func(part []byte) {
+				switch k, _ := topLevelString(part, "type"); k {
+				case "tool_use":
+					t.tools++
+				case "thinking":
+					t.think()
+				}
+			}, "content")
 		}
 		return true
 	})
@@ -204,9 +223,29 @@ func (a ClaudeCodeAgent) Enrich(s Session) Session {
 		resolved = "(untitled)"
 	}
 
-	s.MessageCount = &count
+	s = t.apply(s)
 	s.Title = resolved
 	return s
+}
+
+// claudeTypedByPerson applies the viewer's rule: tool results come back as user lines, and
+// slash-command scaffolding is a string starting with "<"; neither is something a person typed.
+func claudeTypedByPerson(line []byte) bool {
+	m, ok := fieldStart(line, "message")
+	if !ok {
+		return false
+	}
+	if text, ok := topLevelString(line[m:], "content"); ok {
+		text = strings.TrimSpace(text)
+		return text != "" && !strings.HasPrefix(text, "<")
+	}
+	person := true
+	forEachPart(line[m:], func(part []byte) {
+		if k, _ := topLevelString(part, "type"); k == "tool_result" {
+			person = false
+		}
+	}, "content")
+	return person
 }
 
 // Delete removes the session's .jsonl file.
