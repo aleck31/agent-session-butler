@@ -1,7 +1,9 @@
 package agent
 
 import (
-	"errors"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -181,13 +183,115 @@ func TestKiroV3DeleteChecksTheDirectory(t *testing.T) {
 	}
 }
 
-func TestKiroV3RelocateIsRefusedAndResumeNeedsNoEngine(t *testing.T) {
-	s := Session{ID: "sess_x", Store: kiroStoreV3}
-	if _, err := (KiroAgent{}).Relocate(s, "/q", false); !errors.Is(err, ErrRelocateUnsupported) {
-		t.Errorf("relocate: %v", err)
-	}
-	if got := (KiroAgent{}).ResumeArgv(s, false); !slices.Equal(got, []string{"kiro-cli", "chat", "--resume-id", "sess_x"}) {
+func TestKiroV3ResumeNeedsNoEngine(t *testing.T) {
+	got := (KiroAgent{}).ResumeArgv(Session{ID: "sess_x", Store: kiroStoreV3}, false)
+	if !slices.Equal(got, []string{"kiro-cli", "chat", "--resume-id", "sess_x"}) {
 		t.Errorf("resume = %v", got)
+	}
+}
+
+// v3Hash is where Kiro files a session for cwd: the first 16 hex of sha256 of the physical path.
+func v3Hash(t *testing.T, cwd string) string {
+	t.Helper()
+	if real, err := filepath.EvalSymlinks(cwd); err == nil {
+		cwd = real
+	}
+	sum := sha256.Sum256([]byte(cwd))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
+func readMeta(t *testing.T, dir string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "session.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// A move re-files the directory under the new cwd's hash and records the cwd; both hash dirs'
+// indexes go, or Kiro would keep listing the session where it was.
+func TestKiroV3Move(t *testing.T) {
+	home := v3Sandbox(t)
+	newCwd := t.TempDir()
+	src := writeV3(t, home, "oldhash", "sess_x", "/old", "t", v3Rows...)
+	writeFile(t, filepath.Join(src, "session.json"), `{"id":"sess_x","title":"t","workspacePaths":["/old"],"rootPaths":["/old"]}`)
+	for _, h := range []string{"oldhash", v3Hash(t, newCwd)} {
+		idx := filepath.Join(home, ".kiro", "sessions", h, ".index")
+		if err := os.MkdirAll(idx, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(idx, "index.json"), `{}`)
+	}
+	s, _ := (KiroAgent{}).parseV3(src)
+
+	id, err := (KiroAgent{}).Relocate(s, newCwd, false)
+	if err != nil || id != "sess_x" {
+		t.Fatalf("move = %q, %v", id, err)
+	}
+	real, _ := filepath.EvalSymlinks(newCwd)
+	dst := filepath.Join(home, ".kiro", "sessions", v3Hash(t, newCwd), "sess_x")
+	if _, err := os.Stat(src); err == nil {
+		t.Error("source directory still there")
+	}
+	m := readMeta(t, dst)
+	for _, k := range []string{"workspacePaths", "rootPaths"} {
+		if got := m[k].([]any); len(got) != 1 || got[0] != real {
+			t.Errorf("%s = %v, want [%s]", k, got, real)
+		}
+	}
+	for _, h := range []string{"oldhash", v3Hash(t, newCwd)} {
+		if fileExists(filepath.Join(home, ".kiro", "sessions", h, ".index", "index.json")) {
+			t.Errorf("index of %s survived", h)
+		}
+	}
+	if moved, _ := (KiroAgent{}).parseV3(dst); moved.Cwd != real {
+		t.Errorf("rescanned cwd = %q", moved.Cwd)
+	}
+}
+
+// A copy is a new session: a fresh id in its directory name and its session.json, no lock, the original untouched.
+func TestKiroV3Copy(t *testing.T) {
+	home := v3Sandbox(t)
+	newCwd := t.TempDir()
+	src := writeV3(t, home, "oldhash", "cli_bf4c16a8_Cqt", "/old", "t", v3Rows...)
+	writeFile(t, filepath.Join(src, ".lock"), `{"pid":1}`)
+	s, _ := (KiroAgent{}).parseV3(src)
+
+	id, err := (KiroAgent{}).Relocate(s, newCwd, true)
+	if err != nil || !strings.HasPrefix(id, "sess_") {
+		t.Fatalf("copy = %q, %v", id, err)
+	}
+	dst := filepath.Join(home, ".kiro", "sessions", v3Hash(t, newCwd), id)
+	if m := readMeta(t, dst); m["id"] != id {
+		t.Errorf("copy's session.json id = %v, want %s", m["id"], id)
+	}
+	if fileExists(filepath.Join(dst, ".lock")) {
+		t.Error("the copy inherited the original's lock")
+	}
+	if m := readMeta(t, src); m["id"] != "cli_bf4c16a8_Cqt" || m["workspacePaths"].([]any)[0] != "/old" {
+		t.Errorf("original changed: %v", m)
+	}
+}
+
+// Kiro hashes the physical cwd, so a target reached through a symlink is filed under its target.
+func TestKiroV3MoveThroughASymlink(t *testing.T) {
+	home := v3Sandbox(t)
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+	s, _ := (KiroAgent{}).parseV3(writeV3(t, home, "oldhash", "sess_x", "/old", "t"))
+	if _, err := (KiroAgent{}).Relocate(s, link, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".kiro", "sessions", v3Hash(t, real), "sess_x")); err != nil {
+		t.Errorf("not filed under the physical path's hash: %v", err)
 	}
 }
 

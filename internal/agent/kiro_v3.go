@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Kiro's v3 engine keeps each session as a directory, sessions/<sha256(cwd)[:16]>/<id>/, with
@@ -230,8 +234,76 @@ func (KiroAgent) renameV3(s Session, title string) error {
 	if err := kiroPatchJSON(filepath.Join(dir, "session.json"), map[string]any{"title": title}); err != nil {
 		return err
 	}
-	if err := os.Remove(filepath.Join(filepath.Dir(dir), ".index", "index.json")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := kiroDropIndex(filepath.Dir(dir)); err != nil {
 		return fmt.Errorf("title written, but Kiro's index could not be refreshed: %w", err)
+	}
+	return nil
+}
+
+// relocateV3 re-files the session where Kiro would have filed it had it started in newCwd: under the
+// hash of the physical path, which is what Kiro's getcwd sees, and with that path recorded.
+func (KiroAgent) relocateV3(s Session, newCwd string, asCopy bool) (string, error) {
+	if real, err := filepath.EvalSymlinks(newCwd); err == nil {
+		newCwd = real
+	}
+	src := s.Extra["dir"]
+	sum := sha256.Sum256([]byte(newCwd))
+	parent := filepath.Join(kiroSessionsRoot(), hex.EncodeToString(sum[:])[:16])
+	id := s.ID
+	if asCopy {
+		id = "sess_" + uuid.NewString()
+	}
+	dst := filepath.Join(parent, id)
+	if dst != src {
+		if _, err := os.Stat(dst); err == nil {
+			return "", fmt.Errorf("%s already exists", dst)
+		}
+		if err := os.MkdirAll(parent, 0o700); err != nil {
+			return "", err
+		}
+	}
+	switch {
+	case asCopy:
+		if err := copyPath(src, dst); err != nil {
+			return "", err
+		}
+		_ = os.Remove(filepath.Join(dst, ".lock")) // the copy is held by nobody
+	case dst != src:
+		if err := os.Rename(src, dst); err != nil {
+			return "", err
+		}
+	}
+	if err := kiroV3SetPaths(filepath.Join(dst, "session.json"), id, newCwd); err != nil {
+		return "", err
+	}
+	for _, dir := range []string{filepath.Dir(src), parent} {
+		if err := kiroDropIndex(dir); err != nil {
+			return id, fmt.Errorf("session moved, but Kiro's index could not be refreshed: %w", err)
+		}
+	}
+	return id, nil
+}
+
+// kiroV3SetPaths records id and cwd; rootPaths, present on some sessions, mirrors workspacePaths.
+func kiroV3SetPaths(path, id, cwd string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	fields := map[string]any{"id": id, "workspacePaths": []string{cwd}}
+	if _, ok := m["rootPaths"]; ok {
+		fields["rootPaths"] = []string{cwd}
+	}
+	return kiroPatchJSON(path, fields)
+}
+
+func kiroDropIndex(hashDir string) error {
+	if err := os.Remove(filepath.Join(hashDir, ".index", "index.json")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
 	}
 	return nil
 }
