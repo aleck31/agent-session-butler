@@ -269,7 +269,7 @@ func (a ClaudeCodeAgent) Relocate(s Session, newCwd string, asCopy bool) (string
 		id = uuid.NewString()
 	}
 	dst := filepath.Join(destDir, id+".jsonl")
-	if err := claudeRewriteCwd(src, dst, newCwd); err != nil {
+	if err := claudeRewriteCwd(src, dst, newCwd, id); err != nil {
 		return "", err
 	}
 	if !asCopy {
@@ -350,7 +350,7 @@ func (a ClaudeCodeAgent) Rename(s Session, title string) error {
 // claudeRewriteCwd streams src to dst, setting each JSON line's cwd to newCwd.
 // Non-JSON lines are copied verbatim. Errors (and reading nothing) return an
 // error so a move never deletes the source after a failed write.
-func claudeRewriteCwd(src, dst, newCwd string) error {
+func claudeRewriteCwd(src, dst, newCwd, id string) error {
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
@@ -359,8 +359,16 @@ func claudeRewriteCwd(src, dst, newCwd string) error {
 	forEachLine(src, func(line string) bool {
 		var obj map[string]any
 		if json.Unmarshal([]byte(line), &obj) == nil {
-			if _, ok := obj["cwd"]; ok {
+			// sessionId too: Claude files a session as <sessionId>.jsonl, and a copy is a new session.
+			_, hasCwd := obj["cwd"]
+			_, hasID := obj["sessionId"]
+			if hasCwd {
 				obj["cwd"] = newCwd
+			}
+			if hasID {
+				obj["sessionId"] = id
+			}
+			if hasCwd || hasID {
 				if b, e := json.Marshal(obj); e == nil {
 					line = string(b)
 				}

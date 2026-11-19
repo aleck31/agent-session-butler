@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -303,6 +304,13 @@ func TestClaudeRelocateCopyKeepsOriginalAndUsesFreshID(t *testing.T) {
 	if len(after) != 2 {
 		t.Fatalf("after copy: got %d sessions, want 2", len(after))
 	}
+	// The copy has to be addressable by the id cp reported, which is also its file name.
+	ids, want := []string{after[0].ID, after[1].ID}, []string{newID, "sid1"}
+	sort.Strings(ids)
+	sort.Strings(want)
+	if !slices.Equal(ids, want) {
+		t.Errorf("ids after copy: got %v, want %v", ids, want)
+	}
 	cwds := []string{after[0].Cwd, after[1].Cwd}
 	sort.Strings(cwds)
 	if cwds[0] != oldCwd || cwds[1] != newCwd {
@@ -320,7 +328,7 @@ func TestClaudeRewriteCwdRefusesEmptySource(t *testing.T) {
 	}
 	dst := filepath.Join(dir, "out.jsonl")
 
-	if err := claudeRewriteCwd(src, dst, "/new"); err == nil {
+	if err := claudeRewriteCwd(src, dst, "/new", "sid"); err == nil {
 		t.Fatal("expected an error for a source with no lines")
 	}
 	if _, err := os.Stat(dst); !os.IsNotExist(err) {
