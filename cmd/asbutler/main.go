@@ -283,8 +283,7 @@ func listHuman(s *store.Store, installed []string, groups []store.Group, agentFi
 		fmt.Printf("● %s%s  (%d sessions, %s)\n",
 			g.Cwd, badge, len(g.Sessions), store.HumanSize(g.TotalSize()))
 		g = s.EnrichGroup(g)
-		// Render through the view layer so both surfaces agree — notably on
-		// disambiguating titles that collide within a directory.
+		// Render through the view layer so the text table and the JSON agree.
 		printSessions(view.GroupView(g).Sessions)
 		fmt.Println()
 	}
