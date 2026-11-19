@@ -183,8 +183,8 @@ func cmdList(args []string) {
 	installed := s.InstalledAgents()
 	groups := s.Scan()
 
-	// Narrow before enriching: enrichment reads every session file to count
-	// messages, so scoping first is the difference between seconds and minutes.
+	// Narrow before enriching: enrichment reads every session file it is handed
+	// that the cache can't answer, so scoping first keeps a cold query bounded.
 	if pathFilter != "" {
 		want, err := store.ExpandPath(pathFilter)
 		if err != nil {
