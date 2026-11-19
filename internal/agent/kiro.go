@@ -524,5 +524,5 @@ func (a KiroAgent) Transcript(s Session, opts TranscriptOptions) ([]Turn, error)
 	// Grouping and windowing happen last: a tool result can arrive several events
 	// after its call, so pending has to survive the whole stream.
 	ex := groupTurns(turns, func(i int) bool { return userAt[i] })
-	return windowTurns(ex, opts), nil
+	return ex, nil
 }

@@ -57,22 +57,22 @@ func TestWindowExchanges(t *testing.T) {
 	last := func(ex []Turn) string { return ex[len(ex)-1].Messages[0].Text }
 
 	all := mk(5)
-	if got := windowTurns(all, TranscriptOptions{Tail: 2}); len(got) != 2 || last(got) != "e" {
+	if got := WindowTurns(all, TranscriptOptions{Tail: 2}); len(got) != 2 || last(got) != "e" {
 		t.Errorf("tail 2: got %d ending %q", len(got), last(got))
 	}
-	if got := windowTurns(all, TranscriptOptions{Head: 2}); len(got) != 2 || first(got) != "a" {
+	if got := WindowTurns(all, TranscriptOptions{Head: 2}); len(got) != 2 || first(got) != "a" {
 		t.Errorf("head 2: got %d starting %q", len(got), first(got))
 	}
 	// No bound means everything: the caller has opted into the cost.
-	if got := windowTurns(all, TranscriptOptions{}); len(got) != 5 {
+	if got := WindowTurns(all, TranscriptOptions{}); len(got) != 5 {
 		t.Errorf("unbounded: got %d, want 5", len(got))
 	}
 	// A window larger than the transcript is not an error.
-	if got := windowTurns(all, TranscriptOptions{Tail: 99}); len(got) != 5 {
+	if got := WindowTurns(all, TranscriptOptions{Tail: 99}); len(got) != 5 {
 		t.Errorf("oversized tail: got %d, want 5", len(got))
 	}
 	// Head wins when both are set, matching the CLI where the last flag clears the other.
-	if got := windowTurns(all, TranscriptOptions{Head: 1, Tail: 3}); len(got) != 1 || first(got) != "a" {
+	if got := WindowTurns(all, TranscriptOptions{Head: 1, Tail: 3}); len(got) != 1 || first(got) != "a" {
 		t.Errorf("head and tail: got %d starting %q", len(got), first(got))
 	}
 }

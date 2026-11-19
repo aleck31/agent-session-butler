@@ -509,7 +509,7 @@ func (a ClaudeCodeAgent) Transcript(s Session, opts TranscriptOptions) ([]Turn, 
 	})
 
 	ex := groupTurns(turns, func(i int) bool { return userInput[i] })
-	return windowTurns(ex, opts), nil
+	return ex, nil
 }
 
 // claudeResultText flattens a tool_result's content, which is a string in some

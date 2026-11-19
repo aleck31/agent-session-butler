@@ -321,7 +321,7 @@ func (a KiroAgent) transcriptV1(s Session, opts TranscriptOptions) ([]Turn, erro
 	}
 
 	turns := groupTurns(messages, func(i int) bool { return userInput[i] })
-	return windowTurns(turns, opts), nil
+	return turns, nil
 }
 
 // kiroV1AttachResults puts tool output onto the most recent message that is still

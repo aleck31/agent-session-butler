@@ -275,3 +275,39 @@ func TestShowUnknownSessionExitsOne(t *testing.T) {
 		t.Errorf("stderr should name the id, got %q", r.stderr)
 	}
 }
+
+// totalTurns is how a consumer knows what --tail left out (issue #8).
+func TestShowReportsTotalTurns(t *testing.T) {
+	bin := buildBinary(t)
+	env := sandbox(t)
+	var home string
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "HOME="); ok {
+			home = v // the sandbox's entry comes last and wins, as it does for the child
+		}
+	}
+	dir := filepath.Join(home, ".claude", "projects", "-p")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for i := 0; i < 3; i++ {
+		lines = append(lines,
+			`{"type":"user","cwd":"/p","sessionId":"s1","message":{"role":"user","content":"q"}}`,
+			`{"type":"assistant","cwd":"/p","sessionId":"s1","message":{"id":"m`+string(rune('a'+i))+`","content":[{"type":"text","text":"a"}]}}`)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "s1.jsonl"), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := run(t, bin, env, "show", "s1", "--tail", "1")
+	var got struct {
+		Turns      []json.RawMessage `json:"turns"`
+		TotalTurns int               `json:"totalTurns"`
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &got); err != nil {
+		t.Fatalf("show: %v\n%s%s", err, r.stdout, r.stderr)
+	}
+	if len(got.Turns) != 1 || got.TotalTurns != 3 {
+		t.Errorf("turns=%d totalTurns=%d, want 1 of 3", len(got.Turns), got.TotalTurns)
+	}
+}

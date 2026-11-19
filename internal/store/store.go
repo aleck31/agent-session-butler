@@ -505,25 +505,24 @@ func group(sessions []agent.Session) []Group {
 // so a new backend can be listed and cleaned up before it can be read.
 var ErrTranscriptUnsupported = errors.New("this agent cannot show session contents")
 
-// Transcript returns a session's conversation. Sessions reach 97 MB, so opts
-// bounds what is read; with no bound the caller has opted into the whole thing.
-func (s *Store) TranscriptByID(id, store, path string, opts agent.TranscriptOptions) (agent.Session, []agent.Turn, error) {
+// TranscriptByID returns a session's conversation windowed by opts, and how many turns it has in all.
+func (s *Store) TranscriptByID(id, store, path string, opts agent.TranscriptOptions) (agent.Session, []agent.Turn, int, error) {
 	g, sess, err := s.findSession(id, store, path)
 	if err != nil {
-		return agent.Session{}, nil, err
+		return agent.Session{}, nil, 0, err
 	}
 	a := s.agentNamed(sess.Agent)
 	if a == nil {
-		return sess, nil, fmt.Errorf("unknown agent %q", sess.Agent)
+		return sess, nil, 0, fmt.Errorf("unknown agent %q", sess.Agent)
 	}
 	r, ok := a.(agent.Reader)
 	if !ok {
-		return sess, nil, ErrTranscriptUnsupported
+		return sess, nil, 0, ErrTranscriptUnsupported
 	}
 	// Enrich first: the title is a lazy field, and a viewer that heads its output
 	// with a filename or a placeholder is showing the wrong thing.
 	enriched := s.EnrichGroup(Group{Cwd: g.Cwd, Profile: g.Profile,
 		Sessions: []agent.Session{sess}}).Sessions[0]
-	turns, err := r.Transcript(enriched, opts)
-	return enriched, turns, err
+	all, err := r.Transcript(enriched, opts)
+	return enriched, agent.WindowTurns(all, opts), len(all), err
 }

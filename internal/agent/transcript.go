@@ -74,9 +74,9 @@ type TranscriptOptions struct {
 	Bodies bool
 }
 
-// Reader is implemented by agents that can render a session's conversation.
-// Kept separate from Agent so a new backend can be listed and cleaned up before
-// anyone works out how to parse its transcript format.
+// Reader is implemented by agents that can render a session's conversation, every turn of it;
+// the caller applies Head/Tail with WindowTurns. Kept separate from Agent so a new backend can be
+// listed and cleaned up before anyone works out how to parse its transcript format.
 type Reader interface {
 	Transcript(s Session, opts TranscriptOptions) ([]Turn, error)
 }
@@ -100,9 +100,8 @@ func groupTurns(turns []Message, isUserInput func(i int) bool) []Turn {
 	return out
 }
 
-// windowTurns applies Head/Tail. Runs last, so a reader is free to have
-// discarded tool bodies while streaming.
-func windowTurns(ts []Turn, opts TranscriptOptions) []Turn {
+// WindowTurns applies Head/Tail.
+func WindowTurns(ts []Turn, opts TranscriptOptions) []Turn {
 	switch {
 	case opts.Head > 0 && opts.Head < len(ts):
 		return ts[:opts.Head]

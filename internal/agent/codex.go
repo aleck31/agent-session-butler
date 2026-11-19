@@ -477,7 +477,7 @@ func (a CodexAgent) Transcript(s Session, opts TranscriptOptions) ([]Turn, error
 	})
 
 	ex := groupTurns(turns, func(i int) bool { return userInput[i] })
-	return windowTurns(ex, opts), nil
+	return ex, nil
 }
 
 // codexIsInjectedText reports whether a user message is one of Codex's wrappers

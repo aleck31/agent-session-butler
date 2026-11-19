@@ -211,14 +211,14 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 		opts.Head, opts.Tail = n, 0
 	}
 
-	sess, turns, err := s.store.TranscriptByID(r.PathValue("id"), q.Get("store"), q.Get("path"), opts)
+	sess, turns, total, err := s.store.TranscriptByID(r.PathValue("id"), q.Get("store"), q.Get("path"), opts)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": sess.ID, "agent": sess.Agent, "title": sess.Title,
-		"cwd": sess.Cwd, "turns": turns,
+		"cwd": sess.Cwd, "turns": turns, "totalTurns": total,
 	})
 }
 

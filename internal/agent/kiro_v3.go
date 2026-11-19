@@ -208,7 +208,7 @@ func (a KiroAgent) transcriptV3(s Session, opts TranscriptOptions) ([]Turn, erro
 		}
 		return true
 	})
-	return windowTurns(groupTurns(messages, func(i int) bool { return userAt[i] }), opts), nil
+	return groupTurns(messages, func(i int) bool { return userAt[i] }), nil
 }
 
 // deleteV3 goes through kiro-cli, then checks: it reports "Deleted" even for an id it never had.

@@ -119,6 +119,8 @@ asbutler show <id> -H         # readable text
 
 The unit is a **turn** — one message from you plus everything the agent did before you spoke again — not a message. That distinction matters: measured against real history, one turn holds 3 to 530 messages, so "the last 30 messages" can land in the middle of a single agent loop. The default is the last 5 turns, which is 2.6–77 KB of text out of sessions that run to tens of megabytes.
 
+`turns` holds the requested slice and `totalTurns` the count of all of them, so a reader can tell what `--tail`/`--head` left out; the web UI's transcript endpoint returns the same pair, and `-H` heads its output with `5 of 48 turns` when it shows fewer.
+
 Tool arguments and output are folded to a one-line summary with their byte counts, and reasoning to a character count; `--tools` includes the bodies, clipped at 8 KB each. Base64 images render as `[image]` rather than being inlined.
 
 What each agent can supply differs, and these gaps are in the data rather than unimplemented:

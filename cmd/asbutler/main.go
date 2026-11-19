@@ -623,6 +623,8 @@ type transcriptResult struct {
 	Cwd   string       `json:"cwd"`
 	Title string       `json:"title"`
 	Turns []agent.Turn `json:"turns"`
+	// TotalTurns counts every turn, so a consumer can tell what --tail/--head left out.
+	TotalTurns int `json:"totalTurns"`
 }
 
 // cmdShow prints a session's conversation. Defaults to the last few turns
@@ -677,26 +679,30 @@ func cmdShow(args []string) {
 	}
 	opts.Bodies = bodies
 
-	sess, turns, err := store.New().TranscriptByID(id, storeName, pathSel, opts)
+	sess, turns, total, err := store.New().TranscriptByID(id, storeName, pathSel, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "show: %v\n", err)
 		os.Exit(1)
 	}
 
 	if human {
-		printTranscript(sess, turns, bodies)
+		printTranscript(sess, turns, total, bodies)
 		return
 	}
 	writeJSON(transcriptResult{
 		ID: sess.ID, Agent: sess.Agent, Cwd: sess.Cwd, Title: sess.Title,
-		Turns: turns,
+		Turns: turns, TotalTurns: total,
 	})
 }
 
 // printTranscript renders the readable form: one block per turn, tools as a
 // single indented line each unless bodies were requested.
-func printTranscript(sess agent.Session, turns []agent.Turn, bodies bool) {
-	fmt.Printf("%s  (%s · %s)\n%s\n\n", sess.Title, sess.Agent, store.HumanSize(sess.FileSize), sess.Cwd)
+func printTranscript(sess agent.Session, turns []agent.Turn, total int, bodies bool) {
+	shown := ""
+	if len(turns) < total {
+		shown = fmt.Sprintf(" · %d of %d turns", len(turns), total)
+	}
+	fmt.Printf("%s  (%s · %s%s)\n%s\n\n", sess.Title, sess.Agent, store.HumanSize(sess.FileSize), shown, sess.Cwd)
 	if len(turns) == 0 {
 		fmt.Println("(no conversation found)")
 		return

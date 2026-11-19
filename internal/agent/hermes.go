@@ -412,7 +412,7 @@ func (a HermesAgent) Transcript(s Session, opts TranscriptOptions) ([]Turn, erro
 	}
 
 	ex := groupTurns(turns, func(i int) bool { return userInput[i] })
-	return windowTurns(ex, opts), nil
+	return ex, nil
 }
 
 // hermesToolCalls parses the tool_calls column, which holds the provider's own
