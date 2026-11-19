@@ -367,8 +367,12 @@ func lastLine(s string) string {
 // well as a field in the rollout file, with no CLI to change it. Rewriting only
 // the file would leave the two disagreeing — the failure ADR-0003 D3 exists to
 // prevent, except here we cannot write the other side.
-func (CodexAgent) Relocate(s Session, newCwd string, asCopy bool) (string, error) {
-	return "", ErrRelocateUnsupported
+func (a CodexAgent) Relocate(s Session, newCwd string, asCopy bool) (string, error) {
+	return "", a.RelocateRefusal(s)
+}
+
+func (CodexAgent) RelocateRefusal(Session) error {
+	return fmt.Errorf("%w: Codex keeps the cwd in its own index", ErrRelocateUnsupported)
 }
 
 // codexTitle picks the best available label. `name` is the user-assigned session

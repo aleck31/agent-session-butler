@@ -255,7 +255,13 @@ func (ClaudeCodeAgent) Delete(s Session) error { return deleteFiles(s) }
 // newCwd's encoded project dir (which is how Claude locates it) AND rewrites the
 // cwd field on every line (which is how this tool groups it) so the two agree.
 // Copy uses a fresh uuid and keeps the original; move removes it.
+// RelocateRefusal: a Claude session's cwd is its directory name and an in-file field, both ours to rewrite.
+func (ClaudeCodeAgent) RelocateRefusal(Session) error { return nil }
+
 func (a ClaudeCodeAgent) Relocate(s Session, newCwd string, asCopy bool) (string, error) {
+	if err := a.RelocateRefusal(s); err != nil {
+		return "", err
+	}
 	src := a.primaryFile(s)
 	if src == "" {
 		return "", errors.New("session has no file")

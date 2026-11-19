@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -270,8 +271,12 @@ func (e *renameError) Error() string { return "hermes rename failed: " + e.msg }
 
 // Relocate is unsupported for Hermes: a session's home is its profile/DB, not a
 // cwd, and moving rows across profile DBs isn't a meaningful operation here.
-func (HermesAgent) Relocate(s Session, newCwd string, asCopy bool) (string, error) {
-	return "", ErrRelocateUnsupported
+func (a HermesAgent) Relocate(s Session, newCwd string, asCopy bool) (string, error) {
+	return "", a.RelocateRefusal(s)
+}
+
+func (HermesAgent) RelocateRefusal(Session) error {
+	return fmt.Errorf("%w: Hermes keeps the cwd in its own database", ErrRelocateUnsupported)
 }
 
 // activeSessionIDs returns the set of session ids the profile's running gateway

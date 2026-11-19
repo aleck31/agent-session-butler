@@ -63,7 +63,7 @@ func TestFlatContract(t *testing.T) {
 	}
 	assertKeys(t, "session", sessions[0].(map[string]any),
 		"id", "agent", "cwd", "profile", "store", "orphan", "title",
-		"messageCount", "fileSize", "sizeHuman", "modifiedAt", "locked", "resume", "breakdown")
+		"messageCount", "fileSize", "sizeHuman", "modifiedAt", "locked", "resume", "breakdown", "relocatable")
 	// thinking is absent here because this store does not record it — absent, not 0.
 	assertKeys(t, "breakdown", sessions[0].(map[string]any)["breakdown"].(map[string]any),
 		"user", "agent", "toolCalls")

@@ -222,10 +222,8 @@ func (a KiroAgent) Delete(s Session) error {
 // Relocate re-homes a Kiro session to newCwd. Move rewrites the .json's cwd in
 // place; copy duplicates the whole bundle under a fresh session id first.
 func (a KiroAgent) Relocate(s Session, newCwd string, asCopy bool) (string, error) {
-	// v1 keys a conversation by cwd inside Kiro's own database; re-homing it would
-	// mean writing that database, which is Kiro's to write.
-	if s.Store == kiroStoreV1 {
-		return "", fmt.Errorf("%w: not for Kiro's v1 store", ErrRelocateUnsupported)
+	if err := a.RelocateRefusal(s); err != nil {
+		return "", err
 	}
 	if s.Store == kiroStoreV3 {
 		return a.relocateV3(s, newCwd, asCopy)
@@ -250,6 +248,14 @@ func (a KiroAgent) Relocate(s Session, newCwd string, asCopy bool) (string, erro
 		return "", err
 	}
 	return sid, nil
+}
+
+// RelocateRefusal: v1 keys a conversation by cwd inside Kiro's database, which is Kiro's to write.
+func (KiroAgent) RelocateRefusal(s Session) error {
+	if s.Store == kiroStoreV1 {
+		return fmt.Errorf("%w: Kiro's v1 store keys conversations by cwd in its own database", ErrRelocateUnsupported)
+	}
+	return nil
 }
 
 // kiroSetJSON rewrites the session's .json with the given session_id and cwd,

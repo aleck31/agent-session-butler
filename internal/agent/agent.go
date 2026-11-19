@@ -42,6 +42,8 @@ type Session struct {
 	Resume []string `json:"-"`
 	// Breakdown splits MessageCount and adds tool calls and thinking; nil until enriched.
 	Breakdown *Breakdown `json:"-"`
+	// RelocateBlocked is why mv/cp would refuse this session, from RelocateRefusal; "" if they would not.
+	RelocateBlocked string `json:"-"`
 }
 
 // Breakdown is a session's activity by kind. MessageCount is always User + Agent — a person's
@@ -106,6 +108,12 @@ type Agent interface {
 
 // ErrRelocateUnsupported is returned by agents that don't support relocating.
 var ErrRelocateUnsupported = errors.New("this agent does not support moving/copying sessions")
+
+// RelocateChecker is the check every Relocate starts with, exposed so a listing can say in advance
+// which sessions a move or copy would refuse. nil means it would go ahead; locks are separate.
+type RelocateChecker interface {
+	RelocateRefusal(s Session) error
+}
 
 // ErrRenameUnsupported is returned by agents that don't support renaming.
 var ErrRenameUnsupported = errors.New("this agent does not support renaming sessions")

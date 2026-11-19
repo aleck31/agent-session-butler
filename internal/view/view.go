@@ -33,6 +33,10 @@ type Session struct {
 	Locked       bool      `json:"locked"`
 	// Resume is the argv that reopens the session, run from cwd; absent when the agent has none.
 	Resume []string `json:"resume,omitempty"`
+	// Relocatable is whether mv/cp would accept the session, decided by the code they run; a lock,
+	// which comes and goes, is reported separately in locked. RelocateBlocked says why not.
+	Relocatable     bool   `json:"relocatable"`
+	RelocateBlocked string `json:"relocateBlocked,omitempty"`
 	// Breakdown splits messageCount by kind and adds tool calls and thinking; parts a store
 	// does not record are absent. Null until enriched, like messageCount.
 	Breakdown *agent.Breakdown `json:"breakdown,omitempty"`
@@ -89,20 +93,22 @@ func sessionsOf(g store.Group) []Session {
 	out := make([]Session, 0, len(g.Sessions))
 	for _, s := range g.Sessions {
 		out = append(out, Session{
-			ID:           s.ID,
-			Agent:        s.Agent,
-			Cwd:          g.Cwd,
-			Profile:      g.Profile,
-			Store:        s.Store,
-			Orphan:       orphan,
-			Title:        s.Title,
-			MessageCount: s.MessageCount,
-			FileSize:     s.FileSize,
-			SizeHuman:    store.HumanSize(s.FileSize),
-			ModifiedAt:   s.ModifiedAt,
-			Locked:       s.Locked,
-			Resume:       s.Resume,
-			Breakdown:    s.Breakdown,
+			ID:              s.ID,
+			Agent:           s.Agent,
+			Cwd:             g.Cwd,
+			Profile:         g.Profile,
+			Store:           s.Store,
+			Orphan:          orphan,
+			Title:           s.Title,
+			MessageCount:    s.MessageCount,
+			FileSize:        s.FileSize,
+			SizeHuman:       store.HumanSize(s.FileSize),
+			ModifiedAt:      s.ModifiedAt,
+			Locked:          s.Locked,
+			Resume:          s.Resume,
+			Breakdown:       s.Breakdown,
+			Relocatable:     s.RelocateBlocked == "",
+			RelocateBlocked: s.RelocateBlocked,
 		})
 	}
 	return out

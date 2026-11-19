@@ -159,7 +159,7 @@ func (s *Store) Scan() []Group {
 	return group(merged)
 }
 
-// setResume fills each session's resume command. It runs on the whole scan, before any --path
+// setResume fills each session's resume command, and whether mv/cp would refuse it. It runs on the whole scan, before any --path
 // filter, because whether an id is shared across stores depends on rows outside the directory.
 func (s *Store) setResume(sessions []agent.Session) {
 	stores := map[string]map[string]bool{} // agent + id → stores holding it
@@ -171,8 +171,14 @@ func (s *Store) setResume(sessions []agent.Session) {
 		stores[k][sess.Store] = true
 	}
 	for i, sess := range sessions {
-		if r, ok := s.agentNamed(sess.Agent).(agent.Resumer); ok {
+		a := s.agentNamed(sess.Agent)
+		if r, ok := a.(agent.Resumer); ok {
 			sessions[i].Resume = r.ResumeArgv(sess, len(stores[sess.Agent+"\x00"+sess.ID]) > 1)
+		}
+		if c, ok := a.(agent.RelocateChecker); ok {
+			if err := c.RelocateRefusal(sess); err != nil {
+				sessions[i].RelocateBlocked = err.Error()
+			}
 		}
 	}
 }

@@ -913,9 +913,8 @@ function butler() {
     // Agents whose cwd this tool can only read cannot be re-homed; see the README.
     // Kept as one predicate so the row button, the batch button and the count all
     // agree instead of each re-deriving the rule.
-    NO_RELOCATE: ['Hermes', 'Codex'],
     relocateWhyNot(s) {
-      if (this.NO_RELOCATE.includes(s.agent)) return `Move/copy not supported for ${s.agent}`;
+      if (!s.relocatable) return s.relocateBlocked || 'Move/copy not supported for this session';
       if (s.locked) return 'In use by a running agent';
       return '';
     },
